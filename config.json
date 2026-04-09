@@ -1,0 +1,10 @@
+{
+  "name": "LangGraph ST Agent",
+  "version": "2.0.0",
+  "description": "LangGraph agent middleware for SillyTavern — retrieves context from DB, sends to RP LLM, extracts state changes with Logic LLM, and updates DB automatically.",
+  "icon": "https://langchain-ai.github.io/langgraph/images/icon.png",
+  "author": "Community",
+  "category": "AI",
+  "tags": ["langgraph", "sillytavern", "roleplay", "agent", "koboldcpp", "ollama", "chromadb"],
+  "license": "MIT"
+}

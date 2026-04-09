@@ -1,0 +1,15 @@
+{
+  "run": [{
+    "method": "shell.run",
+    "params": {
+      "message": "uv pip install -r requirements.txt --upgrade",
+      "venv": "langgraph-env"
+    }
+  }, {
+    "method": "input",
+    "params": {
+      "title": "Update Complete",
+      "description": "All dependencies updated to latest versions."
+    }
+  }]
+}
