@@ -1,8 +1,0 @@
-{
-  "run": [{
-    "method": "shell.stop",
-    "params": {
-      "message": "Stopping LangGraph ST Agent server..."
-    }
-  }]
-}

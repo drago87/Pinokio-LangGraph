@@ -1,0 +1,7 @@
+{
+  "title": "LangGraph ST Agent",
+  "plugin": {
+    "menu": []
+  },
+  "description": "# LangGraph ST Agent for SillyTavern\n\nA Pinokio script that runs LangGraph as middleware between SillyTavern and your LLMs.\n\n## Architecture\n\n```\nSillyTavern  →  LangGraph Agent  →  RP LLM (KoboldCPP / Ollama)\n                    ↕\n              DB (SQLite + ChromaDB)\n                    ↕\n              Logic LLM (Ollama)\n```\n\n## What It Does\n\n1. SillyTavern sends chat messages to this agent\n2. Agent retrieves character context from the database\n3. Sends enriched prompt to your RP LLM\n4. RP response goes to a smaller Logic LLM\n5. Logic LLM extracts state changes (location, knowledge, items...)\n6. State changes are saved to the database\n7. RP response is returned to SillyTavern\n\n## Setup\n\n1. Click **Install**\n2. Enter your RP LLM address (e.g. KoboldCPP: `http://localhost:5001`)\n3. Enter your Logic LLM address (e.g. Ollama: `http://localhost:11434`)\n4. Click **Start**\n5. In SillyTavern: Connect → OpenAI → Proxy: `http://localhost:8001`\n\n## DB Dependencies\n\n- **SQLite** — built into Python, no extra install needed\n- **ChromaDB** — installed automatically, uses built-in embeddings (no API key)\n\n## Requirements\n\n- RP LLM running (KoboldCPP, Ollama, etc.)\n- Logic LLM running (Ollama recommended — llama3, phi3, gemma2)\n- SillyTavern (to connect as client)"
+}
