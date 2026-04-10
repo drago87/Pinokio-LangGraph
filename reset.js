@@ -1,13 +1,21 @@
 module.exports = {
   run: [{
-    method: "fs.rm",
+    when: "{{platform === 'win32'}}",
+    method: "shell.run",
     params: {
-      path: "venv"
+      "message": "rmdir /s /q venv config.ini settings.json dbs 2>nul & echo Reset complete"
     }
   }, {
-    method: "fs.rm",
+    when: "{{platform !== 'win32'}}",
+    method: "shell.run",
     params: {
-      path: "data"
+      "message": "rm -rf venv config.ini settings.json dbs/"
+    }
+  }, {
+    method: "input",
+    params: {
+      "title": "Reset Complete",
+      "description": "PinokioLangGraph has been reset to pre-install state.\n\nClick Install to set it up again."
     }
   }]
 }

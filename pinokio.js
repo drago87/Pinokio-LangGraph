@@ -2,18 +2,6 @@ module.exports = {
   version: "2.0",
   icon: "icon.png",
   menu: async (kernel, info) => {
-    /**********************************************************************************************
-    * Menu system for LangGraph ST Agent
-    *
-    * Shows different options depending on the current state:
-    *   - Not installed       → Install
-    *   - Installing          → Installing...
-    *   - Installed, stopped  → Start, Update, Install, Reset
-    *   - Running             → Open Dashboard, Terminal
-    *   - Updating            → Updating...
-    *   - Resetting           → Resetting...
-    **********************************************************************************************/
-
     let installed = info.exists("venv")
     let running = {
       install: info.running("install.json"),
@@ -28,7 +16,6 @@ module.exports = {
         text: "Installing",
         href: "install.json",
       }]
-
     } else if (installed) {
       if (running.start) {
         let local = info.local("start.json")
@@ -52,7 +39,6 @@ module.exports = {
             href: "start.json",
           }]
         }
-
       } else if (running.update) {
         return [{
           default: true,
@@ -60,7 +46,6 @@ module.exports = {
           text: "Updating",
           href: "update.js"
         }]
-
       } else if (running.reset) {
         return [{
           default: true,
@@ -68,7 +53,6 @@ module.exports = {
           text: "Resetting",
           href: "reset.js"
         }]
-
       } else {
         return [{
           default: true,
@@ -90,7 +74,6 @@ module.exports = {
           confirm: "Are you sure you wish to reset? This removes the venv and .env config."
         }]
       }
-
     } else {
       return [{
         default: true,

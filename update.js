@@ -7,16 +7,13 @@ module.exports = {
   }, {
     method: "shell.run",
     params: {
-      "message": [
-        "uv venv venv",
-        "uv pip install -r requirements.txt --upgrade"
-      ]
+      "message": "uv pip install -r requirements.txt"
     }
   }, {
     method: "input",
-    "params": {
+    params: {
       "title": "Update Complete",
-      "description": "Dependencies updated. Click Start to restart the server."
+      "description": "Agent-StateSync updated. Click Start to restart the server."
     }
   }]
 }

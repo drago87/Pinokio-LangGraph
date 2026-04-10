@@ -1,104 +1,106 @@
-{
-  "run": [
+module.exports = {
+  run: [
     {
-      "method": "shell.run",
-      "params": {
-        "message": [
+      method: "shell.run",
+      params: {
+        message: [
           "uv venv venv",
           "uv pip install -r requirements.txt"
         ]
       }
     },
     {
-      "method": "shell.enter",
-      "params": {
-        "message": "if exist .env (echo .env already exists, skipping config) else (echo Creating .env... && uv run python -c \"print()\")",
-        "on": [
+      method: "shell.enter",
+      params: {
+        message: "if exist config.ini (echo config.ini already exists, skipping config) else (echo Creating config.ini... && uv run python -c \"print()\")",
+        on: [
           {
-            "event": "/.env already exists/i",
-            "return": true
+            event: "/config.ini already exists/i",
+            return: true
           },
           {
-            "event": "/Creating .env/i",
-            "return": true
+            event: "/Creating config.ini/i",
+            return: true
           }
         ]
       }
     },
     {
-      "when": "{{!info.exists('.env')}}",
-      "method": "input",
-      "params": {
-        "title": "RP LLM (Roleplay Model)",
-        "description": "This is the creative model that generates roleplay responses.\n\nKoboldCPP default: http://localhost:5001\nOllama default: http://localhost:11434",
-        "form": [
+      when: "{{!info.exists('config.ini')}}",
+      method: "input",
+      params: {
+        title: "RP LLM (Roleplay Model)",
+        description: "This is the creative model that generates roleplay responses.\n\nKoboldCPP default: http://localhost:5001\nOllama default: http://localhost:11434",
+        form: [
           {
-            "key": "rp_url",
-            "label": "RP LLM URL",
-            "placeholder": "http://localhost:5001"
+            key: "rp_url",
+            label: "RP LLM URL",
+            placeholder: "http://localhost:5001"
           },
           {
-            "key": "rp_backend",
-            "label": "Backend",
-            "type": "select",
-            "options": [
-              { "value": "kobold", "text": "KoboldCPP" },
-              { "value": "openai_compatible", "text": "Ollama / OpenAI-compatible" }
+            key: "rp_backend",
+            label: "Backend",
+            type: "select",
+            options: [
+              { value: "kobold", text: "KoboldCPP" },
+              { value: "ollama", text: "Ollama" },
+              { value: "openai_compatible", text: "OpenAI-compatible" }
             ],
-            "value": "kobold"
+            value: "kobold"
           },
           {
-            "key": "rp_model",
-            "label": "Model Name (optional)",
-            "description": "Only needed for OpenAI-compatible backends",
-            "placeholder": "mythic-max-lora"
+            key: "rp_model",
+            label: "Model Name (optional)",
+            description: "Only needed for OpenAI-compatible backends",
+            placeholder: "mythic-max-lora"
           }
         ]
       }
     },
     {
-      "when": "{{!info.exists('.env')}}",
-      "method": "input",
-      "params": {
-        "title": "Logic LLM (State Extraction)",
-        "description": "A smaller model that extracts character state changes (location, knowledge, items...) from the RP response.\n\nOllama recommended with llama3, phi3, or gemma2.",
-        "form": [
+      when: "{{!info.exists('config.ini')}}",
+      method: "input",
+      params: {
+        title: "Instruct LLM (State Extraction)",
+        description: "A smaller model that extracts character state changes (location, knowledge, items...) from the RP response.\n\nOllama recommended with llama3, phi3, or gemma2.",
+        form: [
           {
-            "key": "logic_url",
-            "label": "Logic LLM URL",
-            "placeholder": "http://localhost:11434"
+            key: "instruct_url",
+            label: "Instruct LLM URL",
+            placeholder: "http://localhost:11434"
           },
           {
-            "key": "logic_backend",
-            "label": "Backend",
-            "type": "select",
-            "options": [
-              { "value": "ollama", "text": "Ollama" },
-              { "value": "openai_compatible", "text": "OpenAI-compatible" }
+            key: "instruct_backend",
+            label: "Backend",
+            type: "select",
+            options: [
+              { value: "ollama", text: "Ollama" },
+              { value: "kobold", text: "KoboldCPP" },
+              { value: "openai_compatible", text: "OpenAI-compatible" }
             ],
-            "value": "ollama"
+            value: "ollama"
           },
           {
-            "key": "logic_model",
-            "label": "Model Name",
-            "placeholder": "llama3"
+            key: "instruct_model",
+            label: "Model Name",
+            placeholder: "llama3"
           }
         ]
       }
     },
     {
-      "when": "{{!info.exists('.env')}}",
-      "method": "fs.write",
-      "params": {
-        "path": ".env",
-        "text": "# LangGraph ST Agent Configuration\n# ================================\n\n# RP LLM (Creative roleplay model)\nRP_LLM_BASE_URL={{input.rp_url || 'http://localhost:5001'}}\nRP_LLM_API_KEY=none\nRP_LLM_MODEL={{input.rp_model || ''}}\nRP_LLM_BACKEND={{input.rp_backend || 'kobold'}}\n\n# Logic LLM (State extraction model)\nLOGIC_LLM_BASE_URL={{input.logic_url || 'http://localhost:11434'}}\nLOGIC_LLM_API_KEY=none\nLOGIC_LLM_MODEL={{input.logic_model || 'llama3'}}\nLOGIC_LLM_BACKEND={{input.logic_backend || 'ollama'}}\n\n# Server\nSERVER_PORT=8001\n\n# Agent\nCONTEXT_WINDOW_MESSAGES=20\nDB_RETRIEVAL_COUNT=10\nDEBUG_MODE=false"
+      when: "{{!info.exists('config.ini')}}",
+      method: "fs.write",
+      params: {
+        path: "config.ini",
+        text: "# PinokioLangGraph - Agent Configuration\n# =======================================\n# Created by install.json. Edit directly or re-run Install.\n\n[agent]\nport = 8001\n\n[rp_llm]\nurl = {{input.rp_url || 'http://localhost:5001'}}\nbackend = {{input.rp_backend || 'kobold'}}\nmodel = {{input.rp_model || ''}}\napi_key = none\n\n[instruct_llm]\nurl = {{input.instruct_url || 'http://localhost:11434'}}\nbackend = {{input.instruct_backend || 'ollama'}}\nmodel = {{input.instruct_model || 'llama3'}}\napi_key = none\n\n[pipeline]\nthinking_steps = 0\nrefinement_steps = 0\nhistory_count = 2\n\n[templates]\nrp = raw\ninstruct = raw\n\n[paths]\ndb_dir = ./dbs\nprompts_dir = ./prompts\n\n[agent_settings]\ncontext_window_messages = 20\ndb_retrieval_count = 10\ndebug_mode = false"
       }
     },
     {
-      "method": "input",
-      "params": {
-        "title": "Installation Complete!",
-        "description": "LangGraph ST Agent is installed.\n\nSillyTavern setup:\n1. Connect → OpenAI API\n2. Proxy URL: http://localhost:8001\n3. API Key: anything\n4. Model: langgraph-agent\n\nClick OK, then press Start."
+      method: "input",
+      params: {
+        title: "Installation Complete!",
+        description: "PinokioLangGraph is installed.\n\nSillyTavern setup:\n1. Install the Agent-StateSync extension: https://github.com/drago87/Agent-StateSync\n2. In SillyTavern: Connect → OpenAI API\n3. Proxy URL: http://localhost:8001\n4. API Key: anything\n5. Model: langgraph-agent\n\nThen click Start to launch the Agent.\n\nConfig file: config.ini (edit anytime to change settings)"
       }
     }
   ]
