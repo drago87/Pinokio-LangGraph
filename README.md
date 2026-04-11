@@ -1,3 +1,5 @@
+## WARNING Still untested
+
 # PinokioLangGraph
 
 FastAPI + LangGraph agent for SillyTavern RP state management. Routes chat between a creative narrative LLM and a state-extraction LLM, maintaining per-session world state in SQLite databases with full swipe/redo support.
