@@ -22,7 +22,11 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "config.ini"
+# ── APP_DIR: always resolves to the app/ folder ──────────────
+# server.py is at app/server.py, so __file__ gives us the app/ dir.
+# All relative paths (config.ini, ./dbs, ./prompts) resolve from here.
+APP_DIR = Path(__file__).parent.resolve()
+CONFIG_FILE = APP_DIR / "config.ini"
 
 # ── Defaults ──────────────────────────────────────────────────
 
@@ -143,9 +147,9 @@ class ConfigManager:
 
     def _load_config_ini(self):
         """Read config.ini and apply values to self.config."""
-        path = Path(CONFIG_FILE)
+        path = CONFIG_FILE  # Already a Path (APP_DIR / "config.ini")
         if not path.exists():
-            logger.info(f"{CONFIG_FILE} not found — using defaults")
+            logger.info(f"{path} not found — using defaults")
             return
 
         parser = configparser.ConfigParser(
@@ -291,6 +295,7 @@ class ConfigManager:
 
         Returns a dict of applied changes for logging.
         """
+        # Map: extension_key → (config_attribute, coerce)
         KEY_MAP = {
             "rp_llm_url": ("rp_llm_url", str),
             "rp_llm_backend": ("rp_llm_backend", str),
@@ -335,7 +340,10 @@ class ConfigManager:
     # ── Helpers ────────────────────────────────────────────────
 
     def get_effective_urls(self) -> dict:
-        """Return fully-formed URLs for both LLM endpoints."""
+        """Return fully-formed URLs for both LLM endpoints.
+
+        Ensures URLs have a scheme prefix and strips trailing slashes.
+        """
         def normalize(url: str) -> str:
             url = url.strip()
             if not url.startswith("http://") and not url.startswith("https://"):
@@ -346,6 +354,27 @@ class ConfigManager:
             "rp_llm_url": normalize(self.config.rp_llm_url),
             "instruct_llm_url": normalize(self.config.instruct_llm_url),
         }
+
+    def get_resolved_path(self, relative_path: str) -> Path:
+        """Resolve a relative path from config.ini against APP_DIR.
+
+        config.ini uses ./dbs and ./prompts which are relative to app/.
+        This ensures they always resolve correctly regardless of CWD.
+        """
+        p = Path(relative_path)
+        if p.is_absolute():
+            return p
+        return APP_DIR / p
+
+    @property
+    def db_dir_path(self) -> Path:
+        """Resolved absolute path to the databases directory."""
+        return self.get_resolved_path(self.config.db_dir)
+
+    @property
+    def prompts_dir_path(self) -> Path:
+        """Resolved absolute path to the prompts directory."""
+        return self.get_resolved_path(self.config.prompts_dir)
 
     @property
     def host(self) -> str:

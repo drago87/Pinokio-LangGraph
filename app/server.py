@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
     global config_manager, database, client_manager
 
     config_manager = ConfigManager()
-    database = Database(config_manager.config.db_dir)
+    database = Database(str(config_manager.db_dir_path))
     client_manager = LLMClientManager()
 
     # Apply debug mode from config.ini (extension can change it later)
@@ -108,8 +108,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Instruct dis.:  {config_manager.config.instruct_llm_disabled}")
     logger.info(f"  Debug mode:     {config_manager.config.debug_mode}")
     logger.info(f"  Dry run:        {config_manager.config.dry_run}")
-    logger.info(f"  DB directory:   {config_manager.config.db_dir}")
-    logger.info(f"  Prompts dir:    {config_manager.config.prompts_dir}")
+    logger.info(f"  DB directory:   {config_manager.db_dir_path}")
+    logger.info(f"  Prompts dir:    {config_manager.prompts_dir_path}")
     logger.info("=" * 56)
 
     yield
@@ -275,7 +275,7 @@ async def init_session(session_id: str, request: Request):
                     urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
                 )
                 pipeline = ExtractionPipeline(
-                    database, instruct_client, cfg.prompts_dir
+                    database, instruct_client, str(config_manager.prompts_dir_path)
                 )
 
                 desc = body.get("character_description", "")
@@ -496,7 +496,7 @@ async def chat_completions(request: Request):
             logger.info(f"[DRY RUN] World state exists ({len(world_state)} fields) — would send to Instruct LLM for translation")
     else:
         translation_pipe = TranslationPipeline(
-            database, instruct_client, cfg.prompts_dir
+            database, instruct_client, str(config_manager.prompts_dir_path)
         )
         try:
             world_summary = await translation_pipe.translate(meta.session_id)
@@ -635,7 +635,7 @@ async def chat_completions(request: Request):
                 logger.info("[INSTRUCT LLM DISABLED] Skipping state extraction")
             else:
                 extraction_pipe = ExtractionPipeline(
-                    database, instruct_client, cfg.prompts_dir
+                    database, instruct_client, str(config_manager.prompts_dir_path)
                 )
 
                 conv_context = ""
