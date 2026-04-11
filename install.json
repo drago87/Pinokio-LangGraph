@@ -1,14 +1,5 @@
 {
   "run": [
-    /**********************************************************************************************
-    * install.json — Sets up the Python environment
-    *
-    * Pinokio creates the venv automatically via the "venv" param.
-    * The "path" param sets the working directory to app/.
-    * No git clone — the app code already lives in app/.
-    *
-    * After deps are installed, optionally creates app/config.ini with user LLM URLs.
-    **********************************************************************************************/
     {
       "method": "shell.run",
       "params": {
@@ -17,86 +8,9 @@
         "chain": true,
         "input": null,
         "message": [
-          "uv pip install -r requirements.txt"
+          "uv pip install -r requirements.txt",
+          "python install.py"
         ]
-      }
-    },
-    {
-      "when": "{{!info.exists('app/config.ini')}}",
-      "method": "input",
-      "params": {
-        "title": "RP LLM (Roleplay Model)",
-        "description": "This is the creative model that generates roleplay responses.\n\nKoboldCPP default: http://localhost:5001\nOllama default: http://localhost:11434",
-        "form": [
-          {
-            "key": "rp_url",
-            "label": "RP LLM URL",
-            "placeholder": "http://localhost:5001"
-          },
-          {
-            "key": "rp_backend",
-            "label": "Backend",
-            "type": "select",
-            "options": [
-              { "value": "kobold", "text": "KoboldCPP" },
-              { "value": "ollama", "text": "Ollama" },
-              { "value": "openai_compatible", "text": "OpenAI-compatible" }
-            ],
-            "value": "kobold"
-          },
-          {
-            "key": "rp_model",
-            "label": "Model Name (optional)",
-            "description": "Only needed for OpenAI-compatible backends",
-            "placeholder": "mythic-max-lora"
-          }
-        ]
-      }
-    },
-    {
-      "when": "{{!info.exists('app/config.ini')}}",
-      "method": "input",
-      "params": {
-        "title": "Instruct LLM (State Extraction)",
-        "description": "A smaller model that extracts character state changes (location, knowledge, items...) from the RP response.\n\nOllama recommended with llama3, phi3, or gemma2.",
-        "form": [
-          {
-            "key": "instruct_url",
-            "label": "Instruct LLM URL",
-            "placeholder": "http://localhost:11434"
-          },
-          {
-            "key": "instruct_backend",
-            "label": "Backend",
-            "type": "select",
-            "options": [
-              { "value": "ollama", "text": "Ollama" },
-              { "value": "kobold", "text": "KoboldCPP" },
-              { "value": "openai_compatible", "text": "OpenAI-compatible" }
-            ],
-            "value": "ollama"
-          },
-          {
-            "key": "instruct_model",
-            "label": "Model Name",
-            "placeholder": "llama3"
-          }
-        ]
-      }
-    },
-    {
-      "when": "{{!info.exists('app/config.ini')}}",
-      "method": "fs.write",
-      "params": {
-        "path": "app/config.ini",
-        "text": "# PinokioLangGraph — Agent Configuration\n# =======================================\n# Created by install.json. Edit directly or re-run Install.\n\n[agent]\n# Port the agent listens on\nport = 8001\n\n[rp_llm]\n# Creative roleplay model (writes narrative prose)\nurl = {{input.rp_url || 'http://localhost:5001'}}\nbackend = {{input.rp_backend || 'kobold'}}\nmodel = {{input.rp_model || ''}}\napi_key = none\n# Set to true to skip all calls to the RP LLM (useful for debugging)\ndisabled = false\n\n[instruct_llm]\n# State extraction model (pulls JSON from narrative)\nurl = {{input.instruct_url || 'http://localhost:11434'}}\nbackend = {{input.instruct_backend || 'ollama'}}\nmodel = {{input.instruct_model || 'llama3'}}\napi_key = none\n# Set to true to skip all calls to the Instruct LLM (useful for debugging)\ndisabled = false\n\n[pipeline]\n# Internal planning passes before generating (0 = off)\nthinking_steps = 0\n# Post-generation review passes (0 = off)\nrefinement_steps = 0\n# User/assistant pairs sent to RP LLM (0 = all)\nhistory_count = 2\n\n[templates]\n# Message format for each LLM: chatml, llama3, alpaca, mistral, raw\nrp = raw\ninstruct = raw\n\n[paths]\n# Where session databases are stored (relative to app/)\ndb_dir = ./dbs\n# Where prompt YAML files live (relative to app/)\nprompts_dir = ./prompts\n\n[agent_settings]\n# Max messages in the context window\ncontext_window_messages = 20\n# State entries to retrieve from DB\ndb_retrieval_count = 10\n\n[debug]\n# Set to true to enable verbose logging (shows everything in the Pinokio terminal)\ndebug_mode = false\n# Set to true to run the full pipeline WITHOUT sending anything to either LLM\n# The agent will log exactly what it received from ST and what it WOULD send\ndry_run = false"
-      }
-    },
-    {
-      "method": "input",
-      "params": {
-        "title": "Installation Complete!",
-        "description": "PinokioLangGraph is installed.\n\nSillyTavern setup:\n1. Install the Agent-StateSync extension: https://github.com/drago87/Agent-StateSync\n2. In SillyTavern: Connect → OpenAI API\n3. Proxy URL: http://localhost:8001\n4. API Key: anything\n5. Model: langgraph-agent\n\nThen click Start to launch the Agent.\n\nConfig file: app/config.ini (edit anytime to change settings)"
       }
     }
   ]

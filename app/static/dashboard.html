@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pinokio-LangGraph Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #c9d1d9; --text-dim: #8b949e; --text-bright: #f0f6fc;
+  --accent: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922;
+  --purple: #bc8cff; --cyan: #39d2c0;
+}
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; line-height: 1.5; }
+.container { max-width: 1200px; margin: 0 auto; padding: 16px 20px; }
+.header { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.header h1 { font-size: 18px; font-weight: 600; color: var(--text-bright); }
+.header .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.status-dot.offline { background: var(--red); }
+.refresh-info { font-size: 12px; color: var(--text-dim); }
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.tab { padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent; transition: all 0.15s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.run-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+.run-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; gap: 12px; }
+.run-header:hover { background: rgba(88,166,255,0.04); }
+.run-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.run-id { font-weight: 600; color: var(--accent); }
+.run-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+.run-badge.completed { background: rgba(63,185,80,0.15); color: var(--green); }
+.run-badge.aborted { background: rgba(248,81,73,0.15); color: var(--red); }
+.run-badge.running { background: rgba(210,153,34,0.15); color: var(--orange); }
+.run-time { font-size: 12px; color: var(--text-dim); font-family: 'Consolas', monospace; }
+.run-details { display: none; padding: 0 14px 12px; border-top: 1px solid var(--border); }
+.run-card.open .run-details { display: block; }
+.run-card.open .chevron { transform: rotate(90deg); }
+.chevron { color: var(--text-dim); transition: transform 0.15s; font-size: 12px; }
+.step { display: flex; gap: 10px; padding: 8px 0; font-size: 13px; border-bottom: 1px solid rgba(48,54,61,0.5); }
+.step:last-child { border-bottom: none; }
+.step-num { color: var(--text-dim); font-family: monospace; min-width: 24px; }
+.step-icon { min-width: 18px; }
+.step-body { flex: 1; }
+.step-name { color: var(--text-bright); font-weight: 500; }
+.step-data { color: var(--text-dim); margin-top: 2px; font-size: 12px; }
+.step-data span { margin-right: 12px; }
+.step-data code { background: rgba(110,118,129,0.15); padding: 1px 5px; border-radius: 4px; font-size: 12px; color: var(--cyan); }
+.step-preview { background: rgba(110,118,129,0.08); padding: 8px 10px; border-radius: 6px; margin-top: 6px; font-size: 12px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; border: 1px solid rgba(48,54,61,0.5); }
+.response-box { background: rgba(88,166,255,0.06); border-color: rgba(88,166,255,0.15); color: var(--text); }
+.db-grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+.session-list { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.session-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.1s; }
+.session-item:last-child { border-bottom: none; }
+.session-item:hover { background: rgba(88,166,255,0.04); }
+.session-item.active { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); }
+.session-name { font-weight: 500; color: var(--text-bright); font-size: 13px; }
+.session-stats { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.detail-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.detail-header { padding: 12px 14px; font-weight: 600; font-size: 14px; color: var(--text-bright); border-bottom: 1px solid var(--border); }
+.detail-body { padding: 14px; }
+.state-table { width: 100%; border-collapse: collapse; }
+.state-table th { text-align: left; font-size: 12px; color: var(--text-dim); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.state-table td { font-size: 13px; padding: 6px 10px; border-bottom: 1px solid rgba(48,54,61,0.5); word-break: break-word; vertical-align: top; }
+.state-key { font-family: monospace; color: var(--purple); white-space: nowrap; }
+.state-val { color: var(--text); }
+.config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.config-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.config-section-title { padding: 10px 14px; font-weight: 600; font-size: 13px; color: var(--accent); border-bottom: 1px solid var(--border); }
+.config-row { display: flex; justify-content: space-between; padding: 6px 14px; font-size: 13px; border-bottom: 1px solid rgba(48,54,61,0.3); }
+.config-key { color: var(--text-dim); }
+.config-val { color: var(--text-bright); font-family: monospace; font-size: 12px; }
+.empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px; }
+.empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+@media (max-width: 768px) {
+  .db-grid { grid-template-columns: 1fr; }
+  .config-grid { grid-template-columns: 1fr; }
+  .run-meta { font-size: 12px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>PinokioLangGraph Dashboard</h1>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <span class="refresh-info">Refreshes every 3s</span>
+      <div class="status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="pipeline">Pipeline</div>
+    <div class="tab" data-tab="database">Database</div>
+    <div class="tab" data-tab="config">Config</div>
+  </div>
+  <div class="tab-content active" id="tab-pipeline">
+    <div id="pipelineContainer"><div class="empty-state"><div class="icon">&#9881;</div>Waiting for pipeline data...</div></div>
+  </div>
+  <div class="tab-content" id="tab-database">
+    <div class="db-grid">
+      <div class="session-list">
+        <div class="detail-header">Sessions</div>
+        <div id="sessionListContainer"><div class="empty-state" style="padding:20px;">No sessions yet</div></div>
+      </div>
+      <div class="detail-panel">
+        <div class="detail-header" id="detailTitle">World State</div>
+        <div class="detail-body" id="detailBody"><div class="empty-state" style="padding:20px;">Select a session to view</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="tab-content" id="tab-config">
+    <div class="config-grid" id="configContainer"><div class="empty-state"><div class="icon">&#9881;</div>Loading config...</div></div>
+  </div>
+</div>
+<script>
+const API = '';
+let refreshInterval = null;
+let activeSession = null;
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+  });
+});
+async function apiFetch(url) {
+  try { const r = await fetch(API + url); if (!r.ok) throw new Error(r.status); return await r.json(); }
+  catch(e) { console.error('API:', e); return null; }
+}
+function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s; }
+async function checkHealth() {
+  const d = await apiFetch('/health');
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  if (d && d.status === 'ok') { dot.classList.remove('offline'); txt.textContent = 'Connected'; return true; }
+  dot.classList.add('offline'); txt.textContent = 'Offline'; return false;
+}
+function renderPipeline(data) {
+  const c = document.getElementById('pipelineContainer');
+  if (!data || !data.runs || !data.runs.length) {
+    c.innerHTML = '<div class="empty-state"><div class="icon">&#9881;</div>No pipeline runs yet.<br><span style="font-size:12px">Send a message from SillyTavern to see data.</span></div>';
+    return;
+  }
+  c.innerHTML = data.runs.map((run, i) => {
+    const isOpen = i === 0;
+    const bc = run.status === 'completed' ? 'completed' : run.status === 'aborted' ? 'aborted' : 'running';
+    const stepsHtml = (run.steps || []).map((s, si) => {
+      let dh = '';
+      const d = s.data || {};
+      if (d.messages) dh += `<span>Messages: <code>${d.messages}</code></span>`;
+      if (d.url) dh += `<span>URL: <code>${esc(d.url)}</code></span>`;
+      if (d.fields) dh += `<span>Fields: <code>${d.fields}</code></span>`;
+      if (d.chars != null) dh += `<span>Response: <code>${d.chars} chars</code></span>`;
+      if (d.changes != null) dh += `<span>Changes: <code>${d.changes} applied</code></span>`;
+      if (d.template) dh += `<span>Template: <code>${esc(d.template)}</code></span>`;
+      if (d.duration_ms) dh += `<span>Duration: <code>${d.duration_ms}ms</code></span>`;
+      if (d.reverted) dh += `<span>Reverted: <code>${d.reverted} fields</code></span>`;
+      let ph = '';
+      if (s.preview) ph = `<div class="step-preview ${s.name === 'rp_response' ? 'response-box' : ''}">${esc(s.preview)}</div>`;
+      if (s.changes) ph = `<div class="step-preview">${Object.entries(s.changes).map(([k,v]) => `${esc(k)}: ${esc(String(v))}`).join('<br>')}</div>`;
+      const icon = s.status === 'done' ? '&#10003;' : s.status === 'warn' ? '&#9888;' : '&#9679;';
+      return `<div class="step"><span class="step-num">${si+1}.</span><span class="step-icon">${icon}</span><div class="step-body"><div class="step-name">${esc(s.label)}</div>${dh ? `<div class="step-data">${dh}</div>` : ''}${ph}</div></div>`;
+    }).join('');
+    const rp = run.response_preview || '';
+    return `<div class="run-card ${isOpen ? 'open' : ''}" onclick="this.classList.toggle('open')"><div class="run-header"><div class="run-meta"><span class="chevron">&#9654;</span><span class="run-id">Run #${data.runs.length - i}</span><span class="run-badge ${bc}">${esc(run.status)}</span><span style="color:var(--text-dim)">session=<code>${esc(run.session_id)}</code> msg=<code>${run.message_id}</code> type=<code>${esc(run.type)}</code></span></div><div style="display:flex;align-items:center;gap:10px;">${run.duration_ms ? `<span class="run-time">${run.duration_ms}ms</span>` : ''}<span class="run-time">${esc(run.timestamp)}</span></div></div><div class="run-details">${stepsHtml}${rp ? `<div class="step" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;"><span class="step-icon" style="color:var(--accent)">&#8618;</span><div class="step-body"><div class="step-name" style="color:var(--accent)">Returned to SillyTavern</div><div class="step-preview response-box">${esc(rp)}</div></div></div>` : ''}</div></div>`;
+  }).join('');
+}
+function renderSessions(data) {
+  const c = document.getElementById('sessionListContainer');
+  if (!data || !data.sessions || !data.sessions.length) {
+    c.innerHTML = '<div class="empty-state" style="padding:20px;">No sessions yet</div>';
+    document.getElementById('detailBody').innerHTML = '<div class="empty-state" style="padding:20px;">No sessions</div>';
+    return;
+  }
+  c.innerHTML = data.sessions.map(s => {
+    const n = s.character_name || 'Unnamed';
+    return `<div class="session-item ${activeSession === s.session_id ? 'active' : ''}" onclick="selectSession('${s.session_id}', this)"><div class="session-name">${esc(n)}</div><div class="session-stats">${s.message_count || 0} messages &middot; ${esc(s.session_id.substring(0,8))}...</div></div>`;
+  }).join('');
+}
+async function selectSession(sid, el) {
+  activeSession = sid;
+  document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const data = await apiFetch('/api/sessions/' + sid);
+  const body = document.getElementById('detailBody');
+  const title = document.getElementById('detailTitle');
+  if (!data) { body.innerHTML = '<div class="empty-state">Failed to load</div>'; return; }
+  title.textContent = `World State \u2014 ${data.character_name || 'Unknown'} (${sid.substring(0,8)}...)`;
+  const ws = data.world_state || {};
+  const entries = Object.entries(ws);
+  if (!entries.length) { body.innerHTML = '<div class="empty-state" style="padding:20px;">No world state data</div>'; return; }
+  body.innerHTML = `<table class="state-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${entries.map(([k,v]) => `<tr><td class="state-key">${esc(k)}</td><td class="state-val">${esc(String(v))}</td></tr>`).join('')}</tbody></table>`;
+}
+function renderConfig(data) {
+  if (!data) return;
+  const sections = [
+    { title: 'Agent', items: { Port: data.port, 'Debug Mode': data.debug_mode, 'Dry Run': data.dry_run } },
+    { title: 'RP LLM', items: { URL: data.rp_llm_url, Backend: data.rp_llm_backend, Model: data.rp_llm_model || '(default)', Disabled: data.rp_llm_disabled } },
+    { title: 'Instruct LLM', items: { URL: data.instruct_llm_url, Backend: data.instruct_llm_backend, Model: data.instruct_llm_model, Disabled: data.instruct_llm_disabled } },
+    { title: 'Pipeline', items: { 'Thinking Steps': data.thinking_steps, 'Refinement Steps': data.refinement_steps, 'History Count': data.history_count, 'RP Template': data.rp_template } },
+    { title: 'Paths', items: { 'DB Dir': data.db_dir, 'Prompts Dir': data.prompts_dir } },
+  ];
+  document.getElementById('configContainer').innerHTML = sections.map(s => `<div class="config-section"><div class="config-section-title">${s.title}</div>${Object.entries(s.items).map(([k,v]) => `<div class="config-row"><span class="config-key">${k}</span><span class="config-val">${esc(String(v))}</span></div>`).join('')}</div>`).join('');
+}
+async function refresh() {
+  if (!await checkHealth()) return;
+  const [pipeline, sessions, config] = await Promise.all([
+    apiFetch('/api/dashboard/pipeline'),
+    apiFetch('/api/dashboard/sessions'),
+    apiFetch('/api/dashboard/config'),
+  ]);
+  if (pipeline) renderPipeline(pipeline);
+  if (sessions) renderSessions(sessions);
+  if (config) renderConfig(config);
+}
+refresh();
+refreshInterval = setInterval(refresh, 3000);
+</script>
+</body>
+</html>

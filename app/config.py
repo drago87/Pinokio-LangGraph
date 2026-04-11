@@ -378,7 +378,7 @@ class ConfigManager:
 
     @property
     def host(self) -> str:
-        return "0.0.0.0"
+        return "localhost"
 
     @property
     def port(self) -> int:

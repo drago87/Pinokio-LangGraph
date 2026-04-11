@@ -1,16 +1,6 @@
 {
   "daemon": true,
   "run": [
-    /**********************************************************************************************
-    * start.json — Launches the FastAPI agent as a daemon
-    *
-    * Pinokio handles venv activation via "venv": "venv".
-    * "path": "app" sets CWD to the app/ folder.
-    * "chain": true chains commands in the same shell session.
-    * "input": null prevents Pinokio from prompting for stdin.
-    *
-    * The "on" regex detects the Uvicorn startup URL from stdout.
-    **********************************************************************************************/
     {
       "method": "shell.run",
       "params": {
@@ -24,7 +14,7 @@
         ],
         "on": [
           {
-            "event": "/Uvicorn running on/i",
+            "event": "/http://\\S+/",
             "done": true
           }
         ]

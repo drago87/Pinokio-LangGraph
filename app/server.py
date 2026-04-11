@@ -10,6 +10,7 @@ Endpoints:
   POST /api/sessions          — Create a new session
   POST /api/sessions/{id}/init — Initialize session with character data
   POST /api/config            — Receive config from ST extension
+  POST /api/stop              — Stop current generation (called by ST extension)
   GET  /health                — Health check
   GET  /api/sessions          — List sessions
   GET  /api/sessions/{id}     — Get session info/stats
@@ -32,13 +33,16 @@ import json
 import logging
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 
 from config import ConfigManager
 from parser import strip_meta_from_messages, SystemMeta
@@ -70,8 +74,68 @@ config_manager: Optional[ConfigManager] = None
 database: Optional[Database] = None
 client_manager: Optional[LLMClientManager] = None
 
-# Pending background tasks (for tracking)
+# Pending background tasks (for tracking + cancellation)
 _background_tasks: set = set()
+
+# Abort event: set by /api/stop to signal active streams to halt
+_abort_event: asyncio.Event = asyncio.Event()
+
+# ── Pipeline Tracker ──────────────────────────────────────
+# Stores recent pipeline runs in memory for the dashboard.
+# Each run records every step of the chat completion pipeline.
+
+class PipelineTracker:
+    def __init__(self, max_runs: int = 50):
+        self.runs: deque = deque(maxlen=max_runs)
+        self._current: Optional[Dict[str, Any]] = None
+
+    def start_run(self, session_id: str, message_id: int, msg_type: str):
+        self._current = {
+            "id": f"run_{int(time.time() * 1000)}",
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "session_id": session_id[:8] if session_id else "?",
+            "message_id": message_id,
+            "type": msg_type,
+            "start_time": time.time(),
+            "steps": [],
+            "status": "running",
+            "duration_ms": None,
+            "response_preview": "",
+        }
+
+    def step(self, name: str, label: str, data: dict = None, status: str = "done", preview: str = None, changes: dict = None):
+        if self._current is None:
+            return
+        entry = {
+            "name": name,
+            "label": label,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "data": data or {},
+            "status": status,
+            "preview": preview,
+            "changes": changes,
+        }
+        self._current["steps"].append(entry)
+
+    def finish(self, status: str = "completed", response_preview: str = ""):
+        if self._current is None:
+            return
+        self._current["status"] = status
+        self._current["duration_ms"] = int((time.time() - self._current["start_time"]) * 1000)
+        self._current["response_preview"] = (response_preview or "")[:500]
+        self.runs.appendleft(self._current)
+        self._current = None
+
+    def to_dict(self) -> dict:
+        result = [dict(r) for r in self.runs]
+        if self._current:
+            running = dict(self._current)
+            running["duration_ms"] = int((time.time() - running["start_time"]) * 1000)
+            result.insert(0, running)
+        return {"runs": result}
+
+
+pipeline_tracker = PipelineTracker()
 
 
 def _apply_debug_level(debug: bool):
@@ -149,6 +213,71 @@ async def health():
         "dry_run": cfg.dry_run if cfg else False,
         "rp_llm_disabled": cfg.rp_llm_disabled if cfg else False,
         "instruct_llm_disabled": cfg.instruct_llm_disabled if cfg else False,
+    }
+
+
+# ── Dashboard ─────────────────────────────────────────────
+
+@app.get("/")
+async def dashboard():
+    """Serve the dashboard HTML page."""
+    html_path = Path(__file__).parent / "static" / "dashboard.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Dashboard not found</h1><p>static/dashboard.html is missing.</p>", status_code=404)
+
+
+@app.get("/api/dashboard/pipeline")
+async def dashboard_pipeline():
+    """Return recent pipeline runs for the dashboard."""
+    return pipeline_tracker.to_dict()
+
+
+@app.get("/api/dashboard/sessions")
+async def dashboard_sessions():
+    """Return all sessions with world state summaries for the dashboard."""
+    if not database:
+        return {"sessions": []}
+
+    sessions = []
+    for sid in database.list_sessions():
+        meta = database.get_session(sid)
+        stats = database.get_session_stats(sid) or {}
+        ws = database.get_world_state(sid)
+        sessions.append({
+            "session_id": sid,
+            "character_name": meta.get("character_name", "") if meta else "",
+            "message_count": stats.get("message_count", 0),
+            "world_state": ws,
+            "initialized": database.is_initialized(sid),
+        })
+    return {"sessions": sessions}
+
+
+@app.get("/api/dashboard/config")
+async def dashboard_config():
+    """Return current config values for the dashboard."""
+    if not config_manager:
+        return {}
+    cfg = config_manager.config
+    return {
+        "port": cfg.port,
+        "debug_mode": cfg.debug_mode,
+        "dry_run": cfg.dry_run,
+        "rp_llm_url": cfg.rp_llm_url,
+        "rp_llm_backend": cfg.rp_llm_backend,
+        "rp_llm_model": cfg.rp_llm_model or "",
+        "rp_llm_disabled": cfg.rp_llm_disabled,
+        "instruct_llm_url": cfg.instruct_llm_url,
+        "instruct_llm_backend": cfg.instruct_llm_backend,
+        "instruct_llm_model": cfg.instruct_llm_model or "",
+        "instruct_llm_disabled": cfg.instruct_llm_disabled,
+        "thinking_steps": cfg.thinking_steps,
+        "refinement_steps": cfg.refinement_steps,
+        "history_count": cfg.history_count,
+        "rp_template": cfg.rp_template,
+        "db_dir": cfg.db_dir,
+        "prompts_dir": cfg.prompts_dir,
     }
 
 
@@ -353,6 +482,61 @@ async def receive_config(request: Request):
     return {"status": "ok", "applied": list(applied.keys())}
 
 
+# ── Stop Generation Endpoint ──────────────────────────────
+
+@app.post("/api/stop")
+async def stop_generation():
+    """Stop the current generation.
+
+    Called by the SillyTavern extension when the user presses Stop.
+    Sets the abort event (checked by active SSE streams each iteration)
+    and optionally calls the RP LLM's native abort endpoint.
+
+    KoboldCPP: POST /api/extra/abort
+    Ollama:    Closing the upstream connection is sufficient
+    Generic:   Closing the upstream connection is sufficient
+    """
+    global _abort_event
+
+    # Set the abort signal so the streaming generator stops on next iteration
+    _abort_event.set()
+    logger.info("[STOP] Abort signal sent — active streams will halt")
+
+    # Also try to call the RP LLM's native abort endpoint
+    if config_manager and not config_manager.config.rp_llm_disabled:
+        cfg = config_manager.config
+        urls = config_manager.get_effective_urls()
+        rp_url = urls["rp_llm_url"]
+
+        try:
+            import httpx
+            abort_urls = {
+                "kobold": f"{rp_url}/api/extra/abort",
+            }
+            backend = cfg.rp_llm_backend.lower() if hasattr(cfg, 'rp_llm_backend') else ""
+
+            if backend in abort_urls:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    resp = await client.post(abort_urls[backend])
+                    logger.info(f"[STOP] Sent native abort to {abort_urls[backend]} → {resp.status_code}")
+            else:
+                # For Ollama and generic backends, the upstream connection closing
+                # when we break out of the stream loop is sufficient to stop generation
+                logger.debug(f"[STOP] No native abort endpoint for backend '{backend}' — upstream close will handle it")
+        except Exception as e:
+            logger.warning(f"[STOP] Failed to call native abort: {e}")
+
+    # Reset the event after a brief delay so future generations aren't immediately aborted
+    async def _reset_abort():
+        await asyncio.sleep(0.5)
+        _abort_event.clear()
+        logger.debug("[STOP] Abort event cleared — ready for next generation")
+
+    asyncio.create_task(_reset_abort())
+
+    return {"status": "stopped", "message": "Generation abort signal sent"}
+
+
 # ── Dry-run helpers ───────────────────────────────────────────
 
 def _log_dry_run_receive(body: dict, meta: SystemMeta, clean_messages: list):
@@ -464,6 +648,17 @@ async def chat_completions(request: Request):
         f"swipe={meta.swipe_index}"
     )
 
+    # ── Track pipeline run for dashboard ────────────────────
+    pipeline_tracker.start_run(meta.session_id, meta.message_id, meta.type)
+    pipeline_tracker.step("received", "Received from SillyTavern", data={"messages": len(clean_messages)})
+    user_preview = ""
+    for m in reversed(clean_messages):
+        if m.get("role") == "user" and m.get("content"):
+            user_preview = m["content"][:300]
+            break
+    if user_preview:
+        pipeline_tracker.step("user_message", "User Message", preview=user_preview)
+
     # ── DRY RUN: show what was received ───────────────────────
     if cfg.dry_run:
         _log_dry_run_receive(body, meta, clean_messages)
@@ -475,6 +670,7 @@ async def chat_completions(request: Request):
         )
         if reverted:
             logger.info(f"Reverted {reverted} state fields for swipe")
+        pipeline_tracker.step("swipe", "Swipe Handling", data={"reverted": reverted or 0}, status="warn" if reverted else "done")
 
     elif meta.type == "redo":
         reverted = database.revert_from_message(
@@ -482,6 +678,7 @@ async def chat_completions(request: Request):
         )
         if reverted:
             logger.info(f"Reverted {reverted} state fields for redo")
+        pipeline_tracker.step("redo", "Redo Handling", data={"reverted": reverted or 0}, status="warn" if reverted else "done")
 
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
@@ -494,14 +691,19 @@ async def chat_completions(request: Request):
         if world_state:
             world_summary = f"[DRY RUN / INSTRUCT DISABLED] Would translate world state: {json.dumps(world_state, indent=2, ensure_ascii=False)[:500]}"
             logger.info(f"[DRY RUN] World state exists ({len(world_state)} fields) — would send to Instruct LLM for translation")
+            pipeline_tracker.step("world_state", "World State Translation", data={"fields": len(world_state)}, status="warn", preview=world_summary[:200])
     else:
         translation_pipe = TranslationPipeline(
             database, instruct_client, str(config_manager.prompts_dir_path)
         )
+        t_start = time.time()
         try:
             world_summary = await translation_pipe.translate(meta.session_id)
+            t_ms = int((time.time() - t_start) * 1000)
+            pipeline_tracker.step("world_state", "World State Translation", data={"fields": "n/a", "duration_ms": t_ms}, preview=world_summary[:200] if world_summary else "(empty)")
         except Exception as e:
             logger.warning(f"World state translation failed: {e}")
+            pipeline_tracker.step("world_state", "World State Translation", status="warn", preview=f"Failed: {e}")
 
     # ── Step 4: Inject world state context ────────────────────
     if world_summary:
@@ -512,6 +714,7 @@ async def chat_completions(request: Request):
 
     # ── Step 5: Format with template ───────────────────────────
     formatted_messages = format_messages(clean_messages, cfg.rp_template)
+    pipeline_tracker.step("template", "Template Formatting", data={"template": cfg.rp_template, "messages": len(formatted_messages)})
 
     # ── Step 6: Thinking passes (optional) ────────────────────
     rp_client = client_manager.get_rp_client(
@@ -537,8 +740,10 @@ async def chat_completions(request: Request):
                             formatted_messages[i]["content"] += notes_text
                             break
                     logger.info(f"Thinking complete: {len(thinking_notes)} notes generated")
+                    pipeline_tracker.step("thinking", "Thinking Passes", data={"notes": len(thinking_notes)}, preview="\n".join(f"- {n}" for n in thinking_notes[:3]))
             except Exception as e:
                 logger.warning(f"Thinking pipeline failed: {e}")
+                pipeline_tracker.step("thinking", "Thinking Passes", status="warn", preview=f"Failed: {e}")
 
     # ── Step 7-8: Stream + Refine ─────────────────────────────
     stream_temperature = body.get("temperature", 0.8)
@@ -582,8 +787,16 @@ async def chat_completions(request: Request):
 
     # ── LIVE: actual streaming ────────────────────────────────
     async def generate():
-        """SSE generator that streams RP LLM output, then optionally refines."""
+        """SSE generator that streams RP LLM output.
+
+        Checks _abort_event each iteration — if set (by /api/stop),
+        the stream stops cleanly without dropping the connection.
+        """
         full_response = []
+        aborted = False
+
+        pipeline_tracker.step("rp_send", "Sent to RP LLM", data={"url": urls["rp_llm_url"], "messages": len(formatted_messages), "temperature": stream_temperature, "max_tokens": stream_max_tokens})
+        rp_start_time = time.time()
 
         try:
             async for chunk in rp_client.chat_stream(
@@ -591,6 +804,12 @@ async def chat_completions(request: Request):
                 temperature=stream_temperature,
                 max_tokens=stream_max_tokens,
             ):
+                # Check if /api/stop was called (ST extension sent abort)
+                if _abort_event.is_set():
+                    logger.info("[STOP] Abort signal received — halting generation")
+                    aborted = True
+                    break
+
                 full_response.append(chunk)
                 payload = json.dumps({
                     "choices": [{
@@ -603,7 +822,26 @@ async def chat_completions(request: Request):
                 })
                 yield f"data: {payload}\n\n"
 
+            # If aborted, send finish_reason=stop and skip post-processing
+            if aborted:
+                logger.info("[STOP] Skipping refinement, logging, and state extraction")
+                pipeline_tracker.finish("aborted", "".join(full_response))
+                finish = json.dumps({
+                    "choices": [{
+                        "delta": {"content": ""},
+                        "finish_reason": "stop",
+                        "index": 0,
+                    }],
+                    "model": cfg.rp_model or "agent-statesync",
+                    "object": "chat.completion.chunk",
+                })
+                yield f"data: {finish}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
             response_text = "".join(full_response)
+            rp_elapsed = int((time.time() - rp_start_time) * 1000)
+            pipeline_tracker.step("rp_response", "RP LLM Response", data={"chars": len(response_text), "duration_ms": rp_elapsed}, preview=response_text[:300])
 
             # ── Step 8: Refinement (optional, blocking) ──────────
             if cfg.refinement_steps > 0 and response_text:
@@ -621,8 +859,10 @@ async def chat_completions(request: Request):
                             f"{len(response_text)} -> {len(refined)} chars"
                         )
                         response_text = refined
+                        pipeline_tracker.step("refinement", "Refinement", data={"chars": len(refined), "duration_ms": int((time.time() - rp_elapsed - rp_start_time) * 1000)})
                 except Exception as e:
                     logger.warning(f"Refinement pipeline failed: {e}")
+                    pipeline_tracker.step("refinement", "Refinement", status="warn", preview=f"Failed: {e}")
 
             # ── Log message to DB ──────────────────────────────
             database.log_message(
@@ -633,6 +873,7 @@ async def chat_completions(request: Request):
             # ── Step 9: Background state extraction ────────────
             if cfg.instruct_llm_disabled:
                 logger.info("[INSTRUCT LLM DISABLED] Skipping state extraction")
+                pipeline_tracker.step("extraction", "State Extraction", status="warn", preview="Instruct LLM disabled — skipped")
             else:
                 extraction_pipe = ExtractionPipeline(
                     database, instruct_client, str(config_manager.prompts_dir_path)
@@ -652,6 +893,13 @@ async def chat_completions(request: Request):
                             assistant_response=response_text,
                             conversation_context=conv_context,
                         )
+
+                        # Track extraction result for dashboard
+                        if result.get("success"):
+                            ws = database.get_world_state(meta.session_id)
+                            pipeline_tracker.step("extraction", "State Extraction", data={"changes": result.get("changes_applied", 0)}, changes=ws)
+                        else:
+                            pipeline_tracker.step("extraction", "State Extraction", preview="No changes extracted")
                         if result.get("success"):
                             logger.info(
                                 f"State extracted: {result.get('changes_applied', 0)} fields "
@@ -664,10 +912,13 @@ async def chat_completions(request: Request):
                             )
                     except Exception as e:
                         logger.error(f"Background state extraction error: {e}")
+                        pipeline_tracker.step("extraction", "State Extraction", status="warn", preview=f"Failed: {e}")
 
                 task = asyncio.create_task(_extract_state())
                 _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
+
+            pipeline_tracker.finish("completed", response_text)
 
         except ConnectionError as e:
             logger.error(f"LLM connection error: {e}")
@@ -728,6 +979,11 @@ async def _passthrough_stream(
             temperature=temperature,
             max_tokens=max_tokens,
         ):
+            # Check for abort signal
+            if _abort_event.is_set():
+                logger.info("[STOP] Abort signal received during passthrough")
+                break
+
             payload = json.dumps({
                 "choices": [{
                     "delta": {"content": chunk},

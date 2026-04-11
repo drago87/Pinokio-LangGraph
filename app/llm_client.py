@@ -2,7 +2,14 @@
 """
 llm_client.py — Async HTTP clients for RP and Instruct LLMs.
 
-Supports /v1/chat/completions (streaming + non-streaming) and /v1/models.
+Communicates with local LLM endpoints (Ollama, Koboldcpp, or any
+OpenAI-compatible API) using httpx for async streaming.
+
+Supports:
+  - /v1/chat/completions (streaming and non-streaming)
+  - /v1/models (model listing)
+  - Automatic URL normalization
+  - Configurable timeouts and retry logic
 """
 
 import httpx
@@ -13,6 +20,7 @@ from typing import AsyncGenerator, Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# Default timeout: 5 minutes for generation (models can be slow)
 DEFAULT_TIMEOUT = 300.0
 CONNECT_TIMEOUT = 15.0
 
@@ -40,6 +48,7 @@ class LLMClient:
         stream: bool = True,
         stop: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        """Build the request payload for /v1/chat/completions."""
         payload = {
             "messages": messages,
             "temperature": temperature,
@@ -59,6 +68,19 @@ class LLMClient:
         max_tokens: int = 2048,
         stop: Optional[List[str]] = None,
     ) -> AsyncGenerator[str, None]:
+        """Stream chat completions from the LLM.
+
+        Yields content deltas as they arrive via SSE.
+
+        Args:
+            messages: Formatted message array.
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens to generate.
+            stop: Optional stop sequences.
+
+        Yields:
+            String content chunks from the LLM.
+        """
         url = f"{self.base_url}/v1/chat/completions"
         payload = await self._build_payload(
             messages, temperature, max_tokens, stream=True, stop=stop
@@ -118,6 +140,14 @@ class LLMClient:
         max_tokens: int = 2048,
         stop: Optional[List[str]] = None,
     ) -> str:
+        """Non-streaming chat completion.
+
+        Used for the Instruct LLM (state extraction) which needs the
+        full response at once for JSON parsing.
+
+        Returns:
+            The assistant's response content as a string.
+        """
         url = f"{self.base_url}/v1/chat/completions"
         payload = await self._build_payload(
             messages, temperature, max_tokens, stream=False, stop=stop
@@ -153,6 +183,11 @@ class LLMClient:
             raise
 
     async def list_models(self) -> List[str]:
+        """List available models from the endpoint.
+
+        Returns a list of model ID strings. Returns empty list
+        if the endpoint doesn't support /v1/models.
+        """
         url = f"{self.base_url}/v1/models"
         try:
             async with httpx.AsyncClient(
@@ -167,6 +202,7 @@ class LLMClient:
         return []
 
     async def health_check(self) -> bool:
+        """Check if the LLM endpoint is reachable."""
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(5.0, connect=3.0)
@@ -191,9 +227,13 @@ class LLMClientManager:
         rp_template: str,
         rp_model: str = "",
     ) -> LLMClient:
+        """Get or create the RP LLM client.
+
+        Rebuilds the client if URL, template, or model changed.
+        """
         snapshot = {"url": rp_url, "template": rp_template, "model": rp_model}
         if self._config_snapshot and self._config_snapshot.get("rp") != snapshot:
-            self._rp_client = None
+            self._rp_client = None  # Force rebuild
 
         if self._rp_client is None:
             self._rp_client = LLMClient(
@@ -211,6 +251,7 @@ class LLMClientManager:
         instruct_template: str,
         instruct_model: str = "",
     ) -> LLMClient:
+        """Get or create the Instruct LLM client."""
         snapshot = {
             "url": instruct_url,
             "template": instruct_template,
@@ -224,7 +265,7 @@ class LLMClientManager:
                 base_url=instruct_url,
                 template=instruct_template,
                 model=instruct_model,
-                timeout=120.0,
+                timeout=120.0,  # Instruct LLM can be faster
             )
             logger.info(
                 f"Created Instruct LLM client: {instruct_url} "
@@ -234,4 +275,5 @@ class LLMClientManager:
         return self._instruct_client
 
     def update_config(self, config_snapshot: dict):
+        """Store the current config snapshot for change detection."""
         self._config_snapshot = config_snapshot
