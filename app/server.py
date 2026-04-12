@@ -9,7 +9,9 @@ Endpoints:
   POST /v1/chat/completions  — Main pipeline (receives from ST extension)
   POST /api/sessions          — Create a new session
   POST /api/sessions/{id}/init — Initialize session with character data
+  POST /api/sessions/{id}/config — Update session config mid-session
   POST /api/config            — Receive config from ST extension
+  POST /api/ping              — Extension heartbeat (updates activity timestamp)
   POST /api/stop              — Stop current generation (called by ST extension)
   GET  /health                — Health check
   GET  /api/sessions          — List sessions
@@ -271,8 +273,9 @@ async def health():
     import time as _time
     cfg = config_manager.config if config_manager else None
 
-    # Check ST extension connectivity (seen activity in last 30 seconds)
-    st_connected = (_time.time() - _last_extension_activity) < 30
+    # Check ST extension connectivity (seen activity in last 6 minutes;
+    # the extension sends a passive heartbeat every 5 minutes)
+    st_connected = (_time.time() - _last_extension_activity) < 360
 
     # Probe RP LLM backend
     rp_ok = False
@@ -304,6 +307,19 @@ async def health():
         "rp_llm": rp_ok,
         "instruct_llm": instruct_ok,
     }
+
+
+# ── Extension Heartbeat ────────────────────────────────────
+
+@app.post("/api/ping")
+async def extension_ping():
+    """Heartbeat endpoint called by the ST extension every 5 minutes.
+
+    Updates the last-extension-seen timestamp so the dashboard's
+    ST Extension indicator stays green between active requests.
+    """
+    _touch_extension_activity()
+    return {"status": "pong"}
 
 
 # ── Dashboard ─────────────────────────────────────────────
@@ -398,6 +414,9 @@ async def list_models():
     return {
         "data": [{"id": m, "object": "model", "owned_by": "local"} for m in all_models],
     }
+
+
+# ── Config Endpoint ───────────────────────────────────────────
 
 
 # ── Session Endpoints ─────────────────────────────────────────
