@@ -321,11 +321,11 @@ async def dashboard_config():
         "dry_run": cfg.dry_run,
         "rp_llm_url": cfg.rp_llm_url,
         "rp_llm_backend": cfg.rp_llm_backend,
-        "rp_llm_model": cfg.rp_model or "",
+        "rp_llm_model": cfg.rp_llm_model or "",
         "rp_llm_disabled": cfg.rp_llm_disabled,
         "instruct_llm_url": cfg.instruct_llm_url,
         "instruct_llm_backend": cfg.instruct_llm_backend,
-        "instruct_llm_model": cfg.instruct_model or "",
+        "instruct_llm_model": cfg.instruct_llm_model or "",
         "instruct_llm_disabled": cfg.instruct_llm_disabled,
         "thinking_steps": cfg.thinking_steps,
         "refinement_steps": cfg.refinement_steps,
@@ -349,13 +349,13 @@ async def list_models():
 
     if not cfg.rp_llm_disabled:
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
         )
         models.extend(await rp_client.list_models())
 
     if not cfg.instruct_llm_disabled:
         instruct_client = client_manager.get_instruct_client(
-            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
         )
         models.extend(await instruct_client.list_models())
 
@@ -460,7 +460,7 @@ async def init_session(session_id: str, request: Request):
             try:
                 urls = config_manager.get_effective_urls()
                 instruct_client = client_manager.get_instruct_client(
-                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
                 )
                 pipeline = ExtractionPipeline(
                     database, instruct_client, str(config_manager.prompts_dir_path)
@@ -469,7 +469,23 @@ async def init_session(session_id: str, request: Request):
                 desc = body.get("character_description", "")
                 scenario = body.get("character_scenario", "")
                 first_mes = body.get("character_first_mes", "")
-                combined = f"Character: {body.get('character_name', '')}\n{desc}\n{scenario}\n{first_mes}"
+                personality = body.get("character_personality", "")
+                combined = f"Character: {body.get('character_name', '')}\n\nPersonality: {personality}\n\nDescription: {desc}\n\nScenario: {scenario}\n\nFirst Message: {first_mes}"
+
+                # Parse tracked characters from body
+                tracked = body.get("tracked_characters", [])
+                if isinstance(tracked, str):
+                    try:
+                        tracked = json.loads(tracked)
+                    except (json.JSONDecodeError, TypeError):
+                        tracked = [t.strip() for t in tracked.split(",") if t.strip()] if tracked else []
+                if not isinstance(tracked, list):
+                    tracked = []
+
+                # If no tracked characters set but we have a character name, track it
+                char_name = body.get("character_name", "")
+                if not tracked and char_name:
+                    tracked = [char_name]
 
                 result = await pipeline.run(
                     session_id=session_id,
@@ -477,11 +493,18 @@ async def init_session(session_id: str, request: Request):
                     swipe_index=0,
                     assistant_response=combined,
                     conversation_context="Initial character data extraction",
+                    mode=mode,
+                    character_name=char_name,
+                    persona_name=body.get("persona_name", ""),
+                    tracked_characters=tracked,
+                    character_description=combined,
+                    is_initial=True,
                 )
                 logger.info(
                     f"Initial state extraction: "
                     f"{'success' if result.get('success') else 'failed'}, "
-                    f"{result.get('changes_applied', 0)} fields"
+                    f"{result.get('changes_applied', 0)} fields, "
+                    f"mode={mode}, tracked={tracked}"
                 )
             except Exception as e:
                 logger.error(f"Background initial extraction failed: {e}")
@@ -529,12 +552,12 @@ async def receive_config(request: Request):
         "rp": {
             "url": urls["rp_llm_url"],
             "template": cfg.rp_template,
-            "model": cfg.rp_model,
+            "model": cfg.rp_llm_model,
         },
         "instruct": {
             "url": urls["instruct_llm_url"],
             "template": cfg.instruct_template,
-            "model": cfg.instruct_model,
+            "model": cfg.instruct_llm_model,
         },
     })
 
@@ -734,7 +757,7 @@ async def chat_completions(request: Request):
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
         )
         return StreamingResponse(
             _passthrough_stream(rp_client, clean_messages, body),
@@ -803,7 +826,7 @@ async def chat_completions(request: Request):
 
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
-        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
     )
 
     world_summary = ""
@@ -839,7 +862,7 @@ async def chat_completions(request: Request):
 
     # ── Step 6: Thinking passes (optional) ────────────────────
     rp_client = client_manager.get_rp_client(
-        urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+        urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
     )
 
     thinking_notes = []
@@ -898,7 +921,7 @@ async def chat_completions(request: Request):
                 f"RP LLM target: {urls['rp_llm_url']} (disabled={cfg.rp_llm_disabled})\n"
                 f"Instruct LLM target: {urls['instruct_llm_url']} (disabled={cfg.instruct_llm_disabled})\n"
                 f"\nCheck the Pinokio terminal for full message logs.",
-                model=cfg.rp_model or "dry-run",
+                model=cfg.rp_llm_model or "dry-run",
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -909,7 +932,7 @@ async def chat_completions(request: Request):
         logger.info("[RP LLM DISABLED] Returning placeholder response")
         placeholder = "[RP LLM DISABLED] The RP LLM is turned off in config.ini. No narrative was generated."
         return StreamingResponse(
-            _dry_run_stream(placeholder, model=cfg.rp_model or "rp-disabled"),
+            _dry_run_stream(placeholder, model=cfg.rp_llm_model or "rp-disabled"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -946,7 +969,7 @@ async def chat_completions(request: Request):
                         "finish_reason": None,
                         "index": 0,
                     }],
-                    "model": cfg.rp_model or "agent-statesync",
+                    "model": cfg.rp_llm_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {payload}\n\n"
@@ -961,7 +984,7 @@ async def chat_completions(request: Request):
                         "finish_reason": "stop",
                         "index": 0,
                     }],
-                    "model": cfg.rp_model or "agent-statesync",
+                    "model": cfg.rp_llm_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {finish}\n\n"
