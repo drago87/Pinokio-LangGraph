@@ -80,6 +80,61 @@ _background_tasks: set = set()
 # Abort event: set by /api/stop to signal active streams to halt
 _abort_event: asyncio.Event = asyncio.Event()
 
+# ── Debug Stepping ──────────────────────────────────────────
+# When debug_mode is enabled in config.ini, the pipeline pauses at
+# each breakpoint and waits for the user to click "Play" in the
+# dashboard before continuing to the next step.
+
+_debug_continue: asyncio.Event = asyncio.Event()
+_debug_state: Dict[str, Any] = {
+    "active": False,
+    "paused": False,
+    "step": 0,
+    "total_steps": 3,
+    "done_text": "",
+    "next_text": "",
+    "data": {},
+    "log": [],
+}
+
+
+async def _debug_wait(done_text: str, next_text: str, data: dict = None):
+    """Pause pipeline execution when debug mode is enabled.
+
+    Updates the debug state (visible in the dashboard) and blocks
+    until the user clicks the Play button (POST /api/debug/continue).
+    """
+    if not config_manager or not config_manager.config.debug_mode:
+        return
+
+    _debug_state["active"] = True
+    _debug_state["paused"] = True
+    _debug_state["step"] += 1
+    _debug_state["done_text"] = done_text
+    _debug_state["next_text"] = next_text
+    _debug_state["data"] = data or {}
+    _debug_state["log"].append({
+        "step": _debug_state["step"],
+        "done": done_text,
+        "time": datetime.now().strftime("%H:%M:%S"),
+    })
+
+    _debug_continue.clear()
+    logger.info(
+        f"[DEBUG] PAUSED at step {_debug_state['step']}/{_debug_state['total_steps']} "
+        f"— {next_text}"
+    )
+
+    try:
+        await _debug_continue.wait()
+    except asyncio.CancelledError:
+        logger.info("[DEBUG] Wait cancelled (request disconnected)")
+        _debug_state["paused"] = False
+        raise
+
+    logger.info("[DEBUG] RESUMED — proceeding")
+    _debug_state["paused"] = False
+
 # ── Pipeline Tracker ──────────────────────────────────────
 # Stores recent pipeline runs in memory for the dashboard.
 # Each run records every step of the chat completion pipeline.
@@ -266,11 +321,11 @@ async def dashboard_config():
         "dry_run": cfg.dry_run,
         "rp_llm_url": cfg.rp_llm_url,
         "rp_llm_backend": cfg.rp_llm_backend,
-        "rp_llm_model": cfg.rp_llm_model or "",
+        "rp_llm_model": cfg.rp_model or "",
         "rp_llm_disabled": cfg.rp_llm_disabled,
         "instruct_llm_url": cfg.instruct_llm_url,
         "instruct_llm_backend": cfg.instruct_llm_backend,
-        "instruct_llm_model": cfg.instruct_llm_model or "",
+        "instruct_llm_model": cfg.instruct_model or "",
         "instruct_llm_disabled": cfg.instruct_llm_disabled,
         "thinking_steps": cfg.thinking_steps,
         "refinement_steps": cfg.refinement_steps,
@@ -384,6 +439,10 @@ async def init_session(session_id: str, request: Request):
 
     logger.info(f"Initializing session {session_id} with character data...")
     logger.debug(f"  Character data keys: {list(body.keys())}")
+    mode = body.get("mode", "character")
+    multi_char = body.get("multi_character", False)
+    tracked = body.get("tracked_characters", [])
+    logger.info(f"  Mode: {mode}, Multi-character: {multi_char}, Tracked: {tracked}")
     success = database.init_session(session_id, body)
 
     if not success:
@@ -537,6 +596,47 @@ async def stop_generation():
     return {"status": "stopped", "message": "Generation abort signal sent"}
 
 
+# ── Debug Stepping Endpoints ──────────────────────────────────
+
+@app.get("/api/debug/status")
+async def debug_status():
+    """Return current debug stepping state for the dashboard.
+
+    The dashboard polls this endpoint to show the current breakpoint,
+    what was just completed, what's next, and the Play button.
+    """
+    return {
+        "debug_mode": config_manager.config.debug_mode if config_manager else False,
+        **_debug_state,
+    }
+
+
+@app.post("/api/debug/continue")
+async def debug_continue():
+    """Resume a paused pipeline step.
+
+    Called by the dashboard Play button. Sets the continue event so
+    the pipeline's _debug_wait() call unblocks.
+    """
+    if not _debug_state["paused"]:
+        return {"status": "not_paused", "message": "Pipeline is not currently paused"}
+    _debug_continue.set()
+    return {"status": "resumed", "message": "Pipeline resumed"}
+
+
+@app.post("/api/debug/reset")
+async def debug_reset():
+    """Reset debug state (clear log, step counter, etc.)."""
+    _debug_state["active"] = False
+    _debug_state["paused"] = False
+    _debug_state["step"] = 0
+    _debug_state["done_text"] = ""
+    _debug_state["next_text"] = ""
+    _debug_state["data"] = {}
+    _debug_state["log"] = []
+    return {"status": "reset"}
+
+
 # ── Dry-run helpers ───────────────────────────────────────────
 
 def _log_dry_run_receive(body: dict, meta: SystemMeta, clean_messages: list):
@@ -645,12 +745,19 @@ async def chat_completions(request: Request):
     logger.info(
         f"[Pipeline] session={meta.session_id[:8]}... "
         f"msg={meta.message_id} type={meta.type} "
-        f"swipe={meta.swipe_index}"
+        f"swipe={meta.swipe_index} char={meta.character_name} "
+        f"mode={meta.mode} tracked={meta.tracked_list}"
     )
 
     # ── Track pipeline run for dashboard ────────────────────
     pipeline_tracker.start_run(meta.session_id, meta.message_id, meta.type)
-    pipeline_tracker.step("received", "Received from SillyTavern", data={"messages": len(clean_messages)})
+    pipeline_tracker.step("received", "Received from SillyTavern", data={
+        "messages": len(clean_messages),
+        "character_name": meta.character_name,
+        "persona_name": meta.persona_name,
+        "mode": meta.mode,
+        "tracked": meta.tracked_list,
+    })
     user_preview = ""
     for m in reversed(clean_messages):
         if m.get("role") == "user" and m.get("content"):
@@ -662,6 +769,13 @@ async def chat_completions(request: Request):
     # ── DRY RUN: show what was received ───────────────────────
     if cfg.dry_run:
         _log_dry_run_receive(body, meta, clean_messages)
+
+    # ── DEBUG BREAKPOINT 1: After parsing ──────────────────────
+    await _debug_wait(
+        f"Received data from ST — {len(clean_messages)} messages, session={meta.session_id[:8]}",
+        f"Preparing to handle {meta.type} (swipe/redo check)",
+        {"messages": len(clean_messages), "session_id": meta.session_id[:8], "type": meta.type, "character": meta.character_name, "mode": meta.mode},
+    )
 
     # ── Step 2: Handle swipe/redo ─────────────────────────────
     if meta.type == "swipe":
@@ -679,6 +793,13 @@ async def chat_completions(request: Request):
         if reverted:
             logger.info(f"Reverted {reverted} state fields for redo")
         pipeline_tracker.step("redo", "Redo Handling", data={"reverted": reverted or 0}, status="warn" if reverted else "done")
+
+    # ── DEBUG BREAKPOINT 2: After swipe/redo ─────────────────
+    await _debug_wait(
+        f"Swipe/redo handled — {reverted or 0} fields reverted" if reverted else "No swipe/redo needed",
+        "Preparing to translate world state (Instruct LLM)",
+        {"reverted": reverted or 0},
+    )
 
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
@@ -748,6 +869,14 @@ async def chat_completions(request: Request):
     # ── Step 7-8: Stream + Refine ─────────────────────────────
     stream_temperature = body.get("temperature", 0.8)
     stream_max_tokens = body.get("max_tokens", 2048)
+
+    # ── DEBUG BREAKPOINT 3: After formatting, before send ──────
+    await _debug_wait(
+        f"Messages prepared — {len(formatted_messages)} formatted msgs, template={cfg.rp_template}"
+        + (f", {len(thinking_notes)} thinking notes" if thinking_notes else ""),
+        f"Preparing to send to RP LLM at {urls['rp_llm_url']}",
+        {"messages": len(formatted_messages), "template": cfg.rp_template, "thinking_notes": len(thinking_notes), "rp_url": urls["rp_llm_url"], "temperature": stream_temperature, "max_tokens": stream_max_tokens},
+    )
 
     # DRY RUN: show what we WOULD send to RP LLM
     if cfg.dry_run:
@@ -884,6 +1013,26 @@ async def chat_completions(request: Request):
                 if user_msgs:
                     conv_context = f"Latest user message:\n{user_msgs[-1].get('content', '')}"
 
+                # Get session mode and tracked characters from DB
+                session_meta = database.get_session(meta.session_id)
+                session_mode = meta.mode  # From the current request
+                if session_meta:
+                    # If the request didn't include mode, fall back to session
+                    if not session_mode or session_mode == "character":
+                        session_mode = session_meta.get("mode", "character")
+
+                # Parse tracked characters from session DB or current meta
+                tracked_chars = meta.tracked_list
+                if not tracked_chars and session_meta:
+                    tc_str = session_meta.get("tracked_characters", "")
+                    if tc_str:
+                        try:
+                            tracked_chars = json.loads(tc_str) if isinstance(tc_str, str) else tc_str
+                        except (json.JSONDecodeError, TypeError):
+                            tracked_chars = [t.strip() for t in tc_str.split(",") if t.strip()]
+                if not tracked_chars and meta.character_name:
+                    tracked_chars = [meta.character_name]
+
                 async def _extract_state():
                     try:
                         result = await extraction_pipe.run(
@@ -892,27 +1041,42 @@ async def chat_completions(request: Request):
                             swipe_index=meta.swipe_index,
                             assistant_response=response_text,
                             conversation_context=conv_context,
+                            mode=session_mode,
+                            character_name=meta.character_name,
+                            persona_name=meta.persona_name,
+                            tracked_characters=tracked_chars,
+                            is_initial=False,
                         )
 
                         # Track extraction result for dashboard
                         if result.get("success"):
                             ws = database.get_world_state(meta.session_id)
-                            pipeline_tracker.step("extraction", "State Extraction", data={"changes": result.get("changes_applied", 0)}, changes=ws)
-                        else:
-                            pipeline_tracker.step("extraction", "State Extraction", preview="No changes extracted")
-                        if result.get("success"):
+                            pipeline_tracker.step("extraction", "State Extraction",
+                                data={
+                                    "changes": result.get("changes_applied", 0),
+                                    "mode": session_mode,
+                                    "tracked": tracked_chars,
+                                },
+                                changes=ws,
+                            )
                             logger.info(
                                 f"State extracted: {result.get('changes_applied', 0)} fields "
-                                f"(msg={meta.message_id}, swipe={meta.swipe_index})"
+                                f"(msg={meta.message_id}, swipe={meta.swipe_index}, "
+                                f"mode={session_mode}, tracked={tracked_chars})"
                             )
                         else:
+                            pipeline_tracker.step("extraction", "State Extraction",
+                                preview="No changes extracted",
+                                data={"mode": session_mode, "tracked": tracked_chars},
+                            )
                             logger.debug(
                                 f"No state changes extracted "
-                                f"(msg={meta.message_id})"
+                                f"(msg={meta.message_id}, mode={session_mode})"
                             )
                     except Exception as e:
                         logger.error(f"Background state extraction error: {e}")
-                        pipeline_tracker.step("extraction", "State Extraction", status="warn", preview=f"Failed: {e}")
+                        pipeline_tracker.step("extraction", "State Extraction",
+                            status="warn", preview=f"Failed: {e}")
 
                 task = asyncio.create_task(_extract_state())
                 _background_tasks.add(task)

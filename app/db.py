@@ -4,10 +4,16 @@ db.py — Per-session SQLite database management for Agent-StateSync.
 
 Each chat session gets its own SQLite database file in the dbs/ directory.
 Tables:
-  - sessions:       Session metadata
-  - world_state:    Current key-value state (single source of truth)
-  - state_changes:  Audit log keyed by (message_id, swipe_index)
-  - message_log:    Optional log of all messages
+  - sessions:       Session metadata (character, persona, init status)
+  - world_state:    Current key-value state of the world (single source of truth)
+  - state_changes:  Audit log of every state change, keyed by (message_id, swipe_index)
+  - message_log:    Optional log of all messages for debugging/replay
+
+Swipe handling:
+  - When the user swipes (regenerates) a response, the previous state changes
+    for that message_id at the previous swipe_index are reverted (applied=FALSE).
+  - When the user edits a previous message (redo), all state changes from
+    that message_id onwards are reverted.
 """
 
 import sqlite3
@@ -20,6 +26,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# SQL schema — executed per session database
 _SESSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id         TEXT PRIMARY KEY,
@@ -31,6 +38,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     character_mes_example TEXT DEFAULT '',
     persona_name       TEXT DEFAULT '',
     persona_description TEXT DEFAULT '',
+    mode               TEXT DEFAULT 'character',
+    multi_character    BOOLEAN DEFAULT FALSE,
+    tracked_characters TEXT DEFAULT '',
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     initialized        BOOLEAN DEFAULT FALSE
 );
@@ -75,6 +85,7 @@ class Database:
         logger.info(f"Database directory: {self.db_dir.resolve()}")
 
     def _get_conn(self, session_id: str) -> sqlite3.Connection:
+        """Open a connection to the session's database."""
         db_path = self.db_dir / f"{session_id}.db"
         conn = sqlite3.connect(str(db_path), timeout=10)
         conn.row_factory = sqlite3.Row
@@ -84,10 +95,29 @@ class Database:
 
     # ── Session Management ─────────────────────────────────────
 
+    # Migration: add columns that didn't exist in older schema versions.
+    # SQLite doesn't support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we
+    # catch the duplicate-column error and ignore it.
+    _MIGRATION_COLUMNS = [
+        ("mode", "TEXT DEFAULT 'character'"),
+        ("multi_character", "BOOLEAN DEFAULT FALSE"),
+        ("tracked_characters", "TEXT DEFAULT ''"),
+    ]
+
+    def _migrate_session(self, conn: sqlite3.Connection):
+        """Add any missing columns to the sessions table."""
+        for col_name, col_def in self._MIGRATION_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_def}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists — ignore
+
     def create_session(self, session_id: str) -> bool:
+        """Create a new session database with schema."""
         conn = self._get_conn(session_id)
         try:
             conn.executescript(_SESSION_SCHEMA)
+            self._migrate_session(conn)
             conn.execute(
                 "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
                 (session_id,),
@@ -102,6 +132,11 @@ class Database:
             conn.close()
 
     def init_session(self, session_id: str, character_data: dict) -> bool:
+        """Initialize session with character card and persona data.
+
+        Called by POST /api/sessions/{id}/init when the extension sends
+        character info on first load.
+        """
         self.create_session(session_id)
         conn = self._get_conn(session_id)
         try:
@@ -116,6 +151,9 @@ class Database:
                     character_mes_example = COALESCE(?, character_mes_example),
                     persona_name = COALESCE(?, persona_name),
                     persona_description = COALESCE(?, persona_description),
+                    mode = COALESCE(?, mode),
+                    multi_character = COALESCE(?, multi_character),
+                    tracked_characters = COALESCE(?, tracked_characters),
                     initialized = TRUE
                 WHERE session_id = ?
                 """,
@@ -128,6 +166,11 @@ class Database:
                     character_data.get("character_mes_example"),
                     character_data.get("persona_name"),
                     character_data.get("persona_description"),
+                    character_data.get("mode"),
+                    character_data.get("multi_character"),
+                    json.dumps(character_data.get("tracked_characters", []))
+                        if isinstance(character_data.get("tracked_characters"), list)
+                        else character_data.get("tracked_characters", ""),
                     session_id,
                 ),
             )
@@ -141,6 +184,7 @@ class Database:
             conn.close()
 
     def is_initialized(self, session_id: str) -> bool:
+        """Check if a session has been initialized with character data."""
         try:
             conn = self._get_conn(session_id)
             try:
@@ -155,6 +199,7 @@ class Database:
             return False
 
     def get_session(self, session_id: str) -> Optional[dict]:
+        """Retrieve session metadata."""
         try:
             conn = self._get_conn(session_id)
             try:
@@ -171,6 +216,11 @@ class Database:
     # ── World State ────────────────────────────────────────────
 
     def get_world_state(self, session_id: str) -> Dict[str, Any]:
+        """Get the current world state as a dictionary.
+
+        Values that are JSON objects/arrays are parsed; plain strings
+        are kept as-is.
+        """
         try:
             conn = self._get_conn(session_id)
             try:
@@ -196,20 +246,32 @@ class Database:
         message_id: int,
         swipe_index: int,
     ) -> int:
+        """Apply state changes and log them.
+
+        For each changed field:
+          1. Record the old value from world_state
+          2. Upsert the new value into world_state
+          3. Insert an audit row into state_changes
+
+        Returns the number of fields updated.
+        """
         conn = self._get_conn(session_id)
         count = 0
         try:
             for field, new_value in changes.items():
+                # Get old value
                 row = conn.execute(
                     "SELECT value FROM world_state WHERE key = ?", (field,)
                 ).fetchone()
                 old_value = row["value"] if row else None
 
+                # Serialize new value
                 if isinstance(new_value, (dict, list)):
                     value_str = json.dumps(new_value, ensure_ascii=False)
                 else:
                     value_str = str(new_value)
 
+                # Upsert world_state
                 conn.execute(
                     """
                     INSERT INTO world_state (key, value, updated_at)
@@ -221,6 +283,7 @@ class Database:
                     (field, value_str),
                 )
 
+                # Log the change
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO state_changes
@@ -249,9 +312,15 @@ class Database:
     def revert_swipe(
         self, session_id: str, message_id: int, swipe_index: int
     ) -> int:
+        """Revert state changes for a specific swipe.
+
+        When the user swipes to a new generation, the changes from the
+        previous swipe_index for this message_id need to be undone.
+        """
         conn = self._get_conn(session_id)
         reverted = 0
         try:
+            # Get changes at or above this swipe_index for this message
             changes = conn.execute(
                 """
                 SELECT id, field, old_value, new_value, swipe_index
@@ -269,9 +338,14 @@ class Database:
                     continue
                 seen.add(field)
 
+                # Restore old value or delete the key
                 if change["old_value"] is not None:
                     conn.execute(
-                        "UPDATE world_state SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                        """
+                        UPDATE world_state
+                        SET value = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE key = ?
+                        """,
                         (change["old_value"], field),
                     )
                 else:
@@ -279,8 +353,12 @@ class Database:
                         "DELETE FROM world_state WHERE key = ?", (field,)
                     )
 
+                # Mark all matching changes as not applied
                 conn.execute(
-                    "UPDATE state_changes SET applied = FALSE WHERE message_id = ? AND field = ? AND applied = TRUE",
+                    """
+                    UPDATE state_changes SET applied = FALSE
+                    WHERE message_id = ? AND field = ? AND applied = TRUE
+                    """,
                     (message_id, field),
                 )
                 reverted += 1
@@ -300,9 +378,16 @@ class Database:
         return reverted
 
     def revert_from_message(self, session_id: str, message_id: int) -> int:
+        """Revert all state changes from a specific message onwards.
+
+        Used for "redo" — when the user edits a previous message, all
+        state changes derived from that message and subsequent messages
+        must be undone because the context has fundamentally changed.
+        """
         conn = self._get_conn(session_id)
         reverted = 0
         try:
+            # Get all applied changes from this message onwards
             changes = conn.execute(
                 """
                 SELECT id, message_id AS mid, swipe_index, field, old_value, new_value
@@ -323,7 +408,11 @@ class Database:
                 field = change["field"]
                 if change["old_value"] is not None:
                     conn.execute(
-                        "UPDATE world_state SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                        """
+                        UPDATE world_state
+                        SET value = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE key = ?
+                        """,
                         (change["old_value"], field),
                     )
                 else:
@@ -332,7 +421,10 @@ class Database:
                     )
 
                 conn.execute(
-                    "UPDATE state_changes SET applied = FALSE WHERE message_id = ? AND swipe_index = ? AND field = ?",
+                    """
+                    UPDATE state_changes SET applied = FALSE
+                    WHERE message_id = ? AND swipe_index = ? AND field = ?
+                    """,
                     (change["mid"], change["swipe_index"], field),
                 )
                 reverted += 1
@@ -360,11 +452,16 @@ class Database:
         role: str,
         content: str,
     ):
+        """Store a message in the log for debugging/replay."""
         try:
             conn = self._get_conn(session_id)
             try:
                 conn.execute(
-                    "INSERT INTO message_log (message_id, swipe_index, role, content) VALUES (?, ?, ?, ?)",
+                    """
+                    INSERT INTO message_log
+                        (message_id, swipe_index, role, content)
+                    VALUES (?, ?, ?, ?)
+                    """,
                     (message_id, swipe_index, role, content),
                 )
                 conn.commit()
@@ -376,12 +473,14 @@ class Database:
     # ── Maintenance ────────────────────────────────────────────
 
     def list_sessions(self) -> List[str]:
+        """List all session IDs that have database files."""
         sessions = []
         for db_file in self.db_dir.glob("*.db"):
             sessions.append(db_file.stem)
         return sorted(sessions)
 
     def delete_session(self, session_id: str) -> bool:
+        """Delete a session's database file."""
         db_path = self.db_dir / f"{session_id}.db"
         try:
             if db_path.exists():
@@ -393,6 +492,7 @@ class Database:
         return False
 
     def get_session_stats(self, session_id: str) -> Optional[dict]:
+        """Get basic statistics for a session."""
         try:
             conn = self._get_conn(session_id)
             try:

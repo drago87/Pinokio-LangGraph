@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pinokio-LangGraph Dashboard</title>
+<title>PinokioLangGraph Dashboard</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
   --bg: #0d1117; --surface: #161b22; --border: #30363d;
   --text: #c9d1d9; --text-dim: #8b949e; --text-bright: #f0f6fc;
   --accent: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922;
-  --purple: #bc8cff; --cyan: #39d2c0;
+  --purple: #bc8cff; --cyan: #39d2c0; --yellow: #e3b341;
 }
 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; line-height: 1.5; }
 .container { max-width: 1200px; margin: 0 auto; padding: 16px 20px; }
@@ -75,6 +75,188 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .config-val { color: var(--text-bright); font-family: monospace; font-size: 12px; }
 .empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px; }
 .empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+
+/* ── Debug Panel ──────────────────────────────────────── */
+.debug-panel {
+  display: none;
+  background: rgba(227, 179, 65, 0.06);
+  border: 1px solid rgba(227, 179, 65, 0.3);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.debug-panel.visible { display: block; }
+
+.debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(227, 179, 65, 0.08);
+  border-bottom: 1px solid rgba(227, 179, 65, 0.2);
+}
+.debug-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.debug-badge {
+  background: rgba(227, 179, 65, 0.2);
+  color: var(--yellow);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.debug-badge.paused {
+  background: rgba(210, 153, 34, 0.25);
+  color: var(--orange);
+  animation: debug-pulse 1.5s ease-in-out infinite;
+}
+.debug-badge.waiting {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+}
+@keyframes debug-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.debug-step-counter {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: monospace;
+}
+
+.debug-body { padding: 16px; }
+
+.debug-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.debug-done-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.debug-done-line .check {
+  color: var(--green);
+  font-weight: bold;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.debug-next-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--yellow);
+  font-weight: 500;
+}
+.debug-next-line .arrow {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.debug-data {
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-dim);
+  margin-top: 8px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.debug-play-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  border: none;
+  border-radius: 8px;
+  background: var(--green);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, opacity 0.15s;
+}
+.debug-play-btn:hover:not(:disabled) {
+  background: #4ac95e;
+  transform: scale(1.02);
+}
+.debug-play-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.debug-play-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.debug-play-btn .play-icon {
+  font-size: 12px;
+}
+.debug-reset-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.debug-reset-btn:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+.debug-log {
+  margin-top: 12px;
+  border-top: 1px solid rgba(227, 179, 65, 0.15);
+  padding-top: 12px;
+}
+.debug-log-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.debug-log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.debug-log-entry .log-time {
+  font-family: monospace;
+  color: var(--text-dim);
+  opacity: 0.7;
+  flex-shrink: 0;
+  min-width: 58px;
+}
+.debug-log-entry .log-step {
+  font-family: monospace;
+  color: var(--purple);
+  flex-shrink: 0;
+  min-width: 32px;
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -83,15 +265,52 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   .db-grid { grid-template-columns: 1fr; }
   .config-grid { grid-template-columns: 1fr; }
   .run-meta { font-size: 12px; }
+  .debug-header { flex-direction: column; gap: 8px; align-items: flex-start; }
 }
 </style>
 </head>
 <body>
 <div class="container">
+
+  <!-- Debug Panel (hidden by default, shown when debug_mode is on) -->
+  <div class="debug-panel" id="debugPanel">
+    <div class="debug-header">
+      <div class="debug-header-left">
+        <span class="debug-badge" id="debugBadge">DEBUG</span>
+        <span class="debug-step-counter" id="debugStepCounter">Step 0/3</span>
+      </div>
+      <button class="debug-reset-btn" onclick="resetDebug()">Reset Log</button>
+    </div>
+    <div class="debug-body">
+      <div class="debug-status" id="debugStatus">
+        <div class="debug-done-line" id="debugDone" style="display:none;">
+          <span class="check">&#10003;</span>
+          <span id="debugDoneText"></span>
+        </div>
+        <div class="debug-next-line" id="debugNext" style="display:none;">
+          <span class="arrow">&#10148;</span>
+          <span id="debugNextText"></span>
+        </div>
+        <div class="debug-data" id="debugData" style="display:none;"></div>
+      </div>
+      <div class="debug-controls">
+        <button class="debug-play-btn" id="debugPlayBtn" onclick="playDebug()" disabled>
+          <span class="play-icon">&#9654;</span>
+          <span>Play</span>
+        </button>
+        <span id="debugPlayHint" style="font-size:12px;color:var(--text-dim);">Waiting for pipeline...</span>
+      </div>
+      <div class="debug-log" id="debugLog" style="display:none;">
+        <div class="debug-log-title">Step Log</div>
+        <div id="debugLogEntries"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="header">
     <h1>PinokioLangGraph Dashboard</h1>
     <div style="display:flex;align-items:center;gap:16px;">
-      <span class="refresh-info">Refreshes every 3s</span>
+      <span class="refresh-info" id="refreshInfo">Refreshes every 3s</span>
       <div class="status">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">Connecting...</span>
@@ -125,7 +344,11 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 <script>
 const API = '';
 let refreshInterval = null;
+let debugPollInterval = null;
 let activeSession = null;
+let isDebugMode = false;
+
+// ── Tab switching ─────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -134,12 +357,16 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
   });
 });
-async function apiFetch(url) {
-  try { const r = await fetch(API + url); if (!r.ok) throw new Error(r.status); return await r.json(); }
+
+// ── API helpers ───────────────────────────────────────
+async function apiFetch(url, opts) {
+  try { const r = await fetch(API + url, opts); if (!r.ok) throw new Error(r.status); return await r.json(); }
   catch(e) { console.error('API:', e); return null; }
 }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s; }
+
+// ── Health check ──────────────────────────────────────
 async function checkHealth() {
   const d = await apiFetch('/health');
   const dot = document.getElementById('statusDot');
@@ -147,6 +374,8 @@ async function checkHealth() {
   if (d && d.status === 'ok') { dot.classList.remove('offline'); txt.textContent = 'Connected'; return true; }
   dot.classList.add('offline'); txt.textContent = 'Offline'; return false;
 }
+
+// ── Pipeline renderer ─────────────────────────────────
 function renderPipeline(data) {
   const c = document.getElementById('pipelineContainer');
   if (!data || !data.runs || !data.runs.length) {
@@ -167,6 +396,9 @@ function renderPipeline(data) {
       if (d.template) dh += `<span>Template: <code>${esc(d.template)}</code></span>`;
       if (d.duration_ms) dh += `<span>Duration: <code>${d.duration_ms}ms</code></span>`;
       if (d.reverted) dh += `<span>Reverted: <code>${d.reverted} fields</code></span>`;
+      if (d.character_name) dh += `<span>Char: <code>${esc(d.character_name)}</code></span>`;
+      if (d.mode) dh += `<span>Mode: <code>${esc(d.mode)}</code></span>`;
+      if (d.tracked && d.tracked.length) dh += `<span>Tracked: <code>${esc(d.tracked.join(', '))}</code></span>`;
       let ph = '';
       if (s.preview) ph = `<div class="step-preview ${s.name === 'rp_response' ? 'response-box' : ''}">${esc(s.preview)}</div>`;
       if (s.changes) ph = `<div class="step-preview">${Object.entries(s.changes).map(([k,v]) => `${esc(k)}: ${esc(String(v))}`).join('<br>')}</div>`;
@@ -174,9 +406,14 @@ function renderPipeline(data) {
       return `<div class="step"><span class="step-num">${si+1}.</span><span class="step-icon">${icon}</span><div class="step-body"><div class="step-name">${esc(s.label)}</div>${dh ? `<div class="step-data">${dh}</div>` : ''}${ph}</div></div>`;
     }).join('');
     const rp = run.response_preview || '';
-    return `<div class="run-card ${isOpen ? 'open' : ''}" onclick="this.classList.toggle('open')"><div class="run-header"><div class="run-meta"><span class="chevron">&#9654;</span><span class="run-id">Run #${data.runs.length - i}</span><span class="run-badge ${bc}">${esc(run.status)}</span><span style="color:var(--text-dim)">session=<code>${esc(run.session_id)}</code> msg=<code>${run.message_id}</code> type=<code>${esc(run.type)}</code></span></div><div style="display:flex;align-items:center;gap:10px;">${run.duration_ms ? `<span class="run-time">${run.duration_ms}ms</span>` : ''}<span class="run-time">${esc(run.timestamp)}</span></div></div><div class="run-details">${stepsHtml}${rp ? `<div class="step" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;"><span class="step-icon" style="color:var(--accent)">&#8618;</span><div class="step-body"><div class="step-name" style="color:var(--accent)">Returned to SillyTavern</div><div class="step-preview response-box">${esc(rp)}</div></div></div>` : ''}</div></div>`;
+    const charInfo = run.steps && run.steps[0] && run.steps[0].data && run.steps[0].data.character_name
+      ? ` char=<code>${esc(run.steps[0].data.character_name)}</code> mode=<code>${esc(run.steps[0].data.mode || 'character')}</code>`
+      : '';
+    return `<div class="run-card ${isOpen ? 'open' : ''}" onclick="this.classList.toggle('open')"><div class="run-header"><div class="run-meta"><span class="chevron">&#9654;</span><span class="run-id">Run #${data.runs.length - i}</span><span class="run-badge ${bc}">${esc(run.status)}</span><span style="color:var(--text-dim)">session=<code>${esc(run.session_id)}</code> msg=<code>${run.message_id}</code> type=<code>${esc(run.type)}</code>${charInfo}</span></div><div style="display:flex;align-items:center;gap:10px;">${run.duration_ms ? `<span class="run-time">${run.duration_ms}ms</span>` : ''}<span class="run-time">${esc(run.timestamp)}</span></div></div><div class="run-details">${stepsHtml}${rp ? `<div class="step" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;"><span class="step-icon" style="color:var(--accent)">&#8618;</span><div class="step-body"><div class="step-name" style="color:var(--accent)">Returned to SillyTavern</div><div class="step-preview response-box">${esc(rp)}</div></div></div>` : ''}</div></div>`;
   }).join('');
 }
+
+// ── Sessions renderer ─────────────────────────────────
 function renderSessions(data) {
   const c = document.getElementById('sessionListContainer');
   if (!data || !data.sessions || !data.sessions.length) {
@@ -186,9 +423,11 @@ function renderSessions(data) {
   }
   c.innerHTML = data.sessions.map(s => {
     const n = s.character_name || 'Unnamed';
-    return `<div class="session-item ${activeSession === s.session_id ? 'active' : ''}" onclick="selectSession('${s.session_id}', this)"><div class="session-name">${esc(n)}</div><div class="session-stats">${s.message_count || 0} messages &middot; ${esc(s.session_id.substring(0,8))}...</div></div>`;
+    const mode = s.mode || 'character';
+    return `<div class="session-item ${activeSession === s.session_id ? 'active' : ''}" onclick="selectSession('${s.session_id}', this)"><div class="session-name">${esc(n)} <small style="color:var(--text-dim)">(${mode})</small></div><div class="session-stats">${s.message_count || 0} messages &middot; ${esc(s.session_id.substring(0,8))}...</div></div>`;
   }).join('');
 }
+
 async function selectSession(sid, el) {
   activeSession = sid;
   document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
@@ -201,30 +440,199 @@ async function selectSession(sid, el) {
   const ws = data.world_state || {};
   const entries = Object.entries(ws);
   if (!entries.length) { body.innerHTML = '<div class="empty-state" style="padding:20px;">No world state data</div>'; return; }
-  body.innerHTML = `<table class="state-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${entries.map(([k,v]) => `<tr><td class="state-key">${esc(k)}</td><td class="state-val">${esc(String(v))}</td></tr>`).join('')}</tbody></table>`;
+  body.innerHTML = `<table class="state-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${entries.map(([k,v]) => `<tr><td class="state-key">${esc(k)}</td><td class="state-val">${esc(typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))}</td></tr>`).join('')}</tbody></table>`;
 }
+
+// ── Config renderer ───────────────────────────────────
 function renderConfig(data) {
   if (!data) return;
   const sections = [
     { title: 'Agent', items: { Port: data.port, 'Debug Mode': data.debug_mode, 'Dry Run': data.dry_run } },
     { title: 'RP LLM', items: { URL: data.rp_llm_url, Backend: data.rp_llm_backend, Model: data.rp_llm_model || '(default)', Disabled: data.rp_llm_disabled } },
-    { title: 'Instruct LLM', items: { URL: data.instruct_llm_url, Backend: data.instruct_llm_backend, Model: data.instruct_llm_model, Disabled: data.instruct_llm_disabled } },
+    { title: 'Instruct LLM', items: { URL: data.instruct_llm_url, Backend: data.instruct_llm_backend, Model: data.instruct_llm_model || '(default)', Disabled: data.instruct_llm_disabled } },
     { title: 'Pipeline', items: { 'Thinking Steps': data.thinking_steps, 'Refinement Steps': data.refinement_steps, 'History Count': data.history_count, 'RP Template': data.rp_template } },
     { title: 'Paths', items: { 'DB Dir': data.db_dir, 'Prompts Dir': data.prompts_dir } },
   ];
   document.getElementById('configContainer').innerHTML = sections.map(s => `<div class="config-section"><div class="config-section-title">${s.title}</div>${Object.entries(s.items).map(([k,v]) => `<div class="config-row"><span class="config-key">${k}</span><span class="config-val">${esc(String(v))}</span></div>`).join('')}</div>`).join('');
 }
+
+// ── Debug panel ───────────────────────────────────────
+let lastDebugStep = 0;
+
+function updateDebugPanel(state) {
+  if (!state || !state.debug_mode) {
+    document.getElementById('debugPanel').classList.remove('visible');
+    stopDebugPolling();
+    isDebugMode = false;
+    setRefreshRate(3000);
+    return;
+  }
+
+  // Debug mode is on — show panel
+  isDebugMode = true;
+  document.getElementById('debugPanel').classList.add('visible');
+
+  const step = state.step || 0;
+  const total = state.total_steps || 3;
+  const paused = state.paused;
+  const active = state.active;
+  const doneText = state.done_text || '';
+  const nextText = state.next_text || '';
+  const data = state.data || {};
+  const log = state.log || [];
+
+  // Badge
+  const badge = document.getElementById('debugBadge');
+  if (paused) {
+    badge.textContent = 'PAUSED';
+    badge.className = 'debug-badge paused';
+  } else if (active) {
+    badge.textContent = 'RUNNING';
+    badge.className = 'debug-badge waiting';
+  } else {
+    badge.textContent = 'DEBUG';
+    badge.className = 'debug-badge';
+  }
+
+  // Step counter
+  document.getElementById('debugStepCounter').textContent = active ? `Step ${step}/${total}` : 'Debug Mode ON';
+
+  // Done line
+  const doneEl = document.getElementById('debugDone');
+  if (doneText) {
+    doneEl.style.display = 'flex';
+    document.getElementById('debugDoneText').textContent = doneText;
+  } else {
+    doneEl.style.display = 'none';
+  }
+
+  // Next line
+  const nextEl = document.getElementById('debugNext');
+  if (nextText && !paused && active) {
+    nextEl.style.display = 'flex';
+    document.getElementById('debugNextText').textContent = nextText;
+  } else if (paused) {
+    // Show "waiting for user" instead of next step
+    nextEl.style.display = 'flex';
+    document.getElementById('debugNextText').textContent = nextText + ' (waiting for you)';
+  } else {
+    nextEl.style.display = 'none';
+  }
+
+  // Data
+  const dataEl = document.getElementById('debugData');
+  if (data && Object.keys(data).length > 0 && paused) {
+    dataEl.style.display = 'block';
+    dataEl.textContent = Object.entries(data)
+      .filter(([k]) => k !== 'messages')  // Skip full message arrays
+      .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+      .join('\n');
+  } else {
+    dataEl.style.display = 'none';
+  }
+
+  // Play button
+  const playBtn = document.getElementById('debugPlayBtn');
+  const playHint = document.getElementById('debugPlayHint');
+  playBtn.disabled = !paused;
+  if (paused) {
+    playBtn.querySelector('span:last-child').textContent = 'Play';
+    playHint.textContent = 'Click to continue to next step';
+  } else if (active) {
+    playBtn.querySelector('span:last-child').textContent = 'Play';
+    playHint.textContent = 'Pipeline running...';
+  } else {
+    playHint.textContent = 'Waiting for pipeline...';
+  }
+
+  // Step log
+  const logContainer = document.getElementById('debugLog');
+  const logEntries = document.getElementById('debugLogEntries');
+  if (log.length > 0) {
+    logContainer.style.display = 'block';
+    logEntries.innerHTML = log.map(entry =>
+      `<div class="debug-log-entry"><span class="log-time">${esc(entry.time)}</span><span class="log-step">#${entry.step}</span><span>${esc(entry.done)}</span></div>`
+    ).join('');
+    // Auto-scroll to bottom
+    logEntries.scrollTop = logEntries.scrollHeight;
+  } else {
+    logContainer.style.display = 'none';
+  }
+
+  // Faster polling when paused
+  if (paused) {
+    setRefreshRate(500);
+    startDebugPolling();
+  }
+}
+
+async function playDebug() {
+  const btn = document.getElementById('debugPlayBtn');
+  btn.disabled = true;
+  btn.querySelector('span:last-child').textContent = 'Running...';
+
+  const result = await apiFetch('/api/debug/continue', { method: 'POST' });
+
+  // Immediately poll to update state
+  setTimeout(async () => {
+    const state = await apiFetch('/api/debug/status');
+    if (state) updateDebugPanel(state);
+  }, 200);
+}
+
+async function resetDebug() {
+  await apiFetch('/api/debug/reset', { method: 'POST' });
+  document.getElementById('debugLogEntries').innerHTML = '';
+  document.getElementById('debugLog').style.display = 'none';
+  document.getElementById('debugDone').style.display = 'none';
+  document.getElementById('debugNext').style.display = 'none';
+  document.getElementById('debugData').style.display = 'none';
+  document.getElementById('debugPlayHint').textContent = 'Waiting for pipeline...';
+}
+
+function startDebugPolling() {
+  if (debugPollInterval) return;
+  debugPollInterval = setInterval(async () => {
+    if (!isDebugMode) return;
+    const state = await apiFetch('/api/debug/status');
+    if (state) updateDebugPanel(state);
+  }, 500);
+}
+
+function stopDebugPolling() {
+  if (debugPollInterval) {
+    clearInterval(debugPollInterval);
+    debugPollInterval = null;
+  }
+}
+
+// ── Refresh rate control ──────────────────────────────
+let currentRefreshRate = 3000;
+
+function setRefreshRate(ms) {
+  if (ms === currentRefreshRate) return;
+  currentRefreshRate = ms;
+  document.getElementById('refreshInfo').textContent = `Refreshes every ${ms >= 1000 ? (ms/1000) + 's' : ms + 'ms'}`;
+  clearInterval(refreshInterval);
+  refreshInterval = setInterval(refresh, ms);
+}
+
+// ── Main refresh loop ─────────────────────────────────
 async function refresh() {
   if (!await checkHealth()) return;
-  const [pipeline, sessions, config] = await Promise.all([
+  const [pipeline, sessions, config, debug] = await Promise.all([
     apiFetch('/api/dashboard/pipeline'),
     apiFetch('/api/dashboard/sessions'),
     apiFetch('/api/dashboard/config'),
+    apiFetch('/api/debug/status'),
   ]);
   if (pipeline) renderPipeline(pipeline);
   if (sessions) renderSessions(sessions);
   if (config) renderConfig(config);
+  if (debug) updateDebugPanel(debug);
 }
+
+// ── Init ──────────────────────────────────────────────
 refresh();
 refreshInterval = setInterval(refresh, 3000);
 </script>
