@@ -183,6 +183,41 @@ class Database:
         finally:
             conn.close()
 
+    def update_session_meta(self, session_id: str, updates: dict) -> bool:
+        """Update specific session metadata fields (mode, tracked_characters, etc.).
+
+        Accepts a dict of column names to new values. Only updates
+        the provided fields; leaves the rest unchanged.
+        """
+        if not updates:
+            return True
+        allowed = {"mode", "tracked_characters", "multi_character"}
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+        if not filtered:
+            return True
+
+        # Serialize tracked_characters if it's a list
+        if "tracked_characters" in filtered and isinstance(filtered["tracked_characters"], list):
+            filtered["tracked_characters"] = json.dumps(filtered["tracked_characters"])
+
+        set_clause = ", ".join(f"{k} = ?" for k in filtered)
+        values = list(filtered.values()) + [session_id]
+        try:
+            conn = self._get_conn(session_id)
+            try:
+                conn.execute(
+                    f"UPDATE sessions SET {set_clause} WHERE session_id = ?",
+                    values,
+                )
+                conn.commit()
+                logger.info(f"Updated session {session_id} meta: {list(filtered.keys())}")
+                return True
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"Failed to update session {session_id} meta: {e}")
+            return False
+
     def is_initialized(self, session_id: str) -> bool:
         """Check if a session has been initialized with character data."""
         try:

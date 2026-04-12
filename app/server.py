@@ -74,6 +74,9 @@ config_manager: Optional[ConfigManager] = None
 database: Optional[Database] = None
 client_manager: Optional[LLMClientManager] = None
 
+# Track last activity from ST extension (any request from extension updates this)
+_last_extension_activity: float = 0.0
+
 # Pending background tasks (for tracking + cancellation)
 _background_tasks: set = set()
 
@@ -256,18 +259,50 @@ app.add_middleware(
 
 # ── Health ────────────────────────────────────────────────────
 
+def _touch_extension_activity():
+    """Update last-extension-seen timestamp."""
+    global _last_extension_activity
+    _last_extension_activity = time.time()
+
+
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
+    """Health check endpoint — also probes RP and Instruct LLM backends."""
+    import time as _time
     cfg = config_manager.config if config_manager else None
+
+    # Check ST extension connectivity (seen activity in last 30 seconds)
+    st_connected = (_time.time() - _last_extension_activity) < 30
+
+    # Probe RP LLM backend
+    rp_ok = False
+    rp_disabled = cfg.rp_llm_disabled if cfg else False
+    if not rp_disabled and client_manager and client_manager._rp_client:
+        try:
+            rp_ok = await client_manager._rp_client.health_check()
+        except Exception:
+            rp_ok = False
+
+    # Probe Instruct LLM backend
+    instruct_ok = False
+    instruct_disabled = cfg.instruct_llm_disabled if cfg else False
+    if not instruct_disabled and client_manager and client_manager._instruct_client:
+        try:
+            instruct_ok = await client_manager._instruct_client.health_check()
+        except Exception:
+            instruct_ok = False
+
     return {
         "status": "ok",
         "version": "2.0.0",
         "sessions": len(database.list_sessions()) if database else 0,
         "debug_mode": cfg.debug_mode if cfg else False,
         "dry_run": cfg.dry_run if cfg else False,
-        "rp_llm_disabled": cfg.rp_llm_disabled if cfg else False,
-        "instruct_llm_disabled": cfg.instruct_llm_disabled if cfg else False,
+        "rp_llm_disabled": rp_disabled,
+        "instruct_llm_disabled": instruct_disabled,
+        "st_extension": st_connected,
+        "rp_llm": rp_ok,
+        "instruct_llm": instruct_ok,
     }
 
 
@@ -426,6 +461,7 @@ async def get_session(session_id: str):
 @app.post("/api/sessions/{session_id}/init")
 async def init_session(session_id: str, request: Request):
     """Initialize a session with character card data."""
+    _touch_extension_activity()
     if not database:
         raise HTTPException(503, "Database not initialized")
 
@@ -520,6 +556,40 @@ async def init_session(session_id: str, request: Request):
     }
 
 
+@app.patch("/api/sessions/{session_id}/config")
+async def update_session_config(session_id: str, request: Request):
+    """Update session-level config (mode, tracked_characters) mid-session.
+
+    Called by the extension when the user changes character settings
+    from the Character Management panel.
+    """
+    _touch_extension_activity()
+    if not database:
+        raise HTTPException(503, "Database not initialized")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+
+    updates = {}
+    if "mode" in body:
+        if body["mode"] not in ("character", "scenario"):
+            raise HTTPException(400, f"Invalid mode: {body['mode']}")
+        updates["mode"] = body["mode"]
+    if "tracked_characters" in body:
+        updates["tracked_characters"] = body["tracked_characters"]
+
+    if not updates:
+        raise HTTPException(400, "No updatable fields provided")
+
+    ok = database.update_session_meta(session_id, updates)
+    if not ok:
+        raise HTTPException(500, "Failed to update session config")
+
+    return {"status": "ok", "updated": list(updates.keys())}
+
+
 # ── Config Endpoint ───────────────────────────────────────────
 
 @app.post("/api/config")
@@ -528,6 +598,7 @@ async def receive_config(request: Request):
 
     Extension values OVERWRITE config.ini values.
     """
+    _touch_extension_activity()
     if not config_manager:
         raise HTTPException(503, "Agent not ready")
 
@@ -578,6 +649,7 @@ async def stop_generation():
     Ollama:    Closing the upstream connection is sufficient
     Generic:   Closing the upstream connection is sufficient
     """
+    _touch_extension_activity()
     global _abort_event
 
     # Set the abort signal so the streaming generator stops on next iteration
@@ -724,6 +796,7 @@ def _dry_run_stream(text: str, model: str = "dry-run"):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """Main chat completion endpoint."""
+    _touch_extension_activity()
     if not config_manager or not database or not client_manager:
         raise HTTPException(503, "Agent not ready")
 

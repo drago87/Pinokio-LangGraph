@@ -17,8 +17,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .header { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .header h1 { font-size: 18px; font-weight: 600; color: var(--text-bright); }
 .header .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
 .status-dot.offline { background: var(--red); }
+.status-dot.disabled { background: var(--text-dim); }
+.status-lights { display: flex; align-items: center; gap: 14px; }
+.status-light { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.status-light .label { opacity: 0.8; }
 .refresh-info { font-size: 12px; color: var(--text-dim); }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
 .tab { padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent; transition: all 0.15s; }
@@ -311,9 +315,23 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
     <h1>PinokioLangGraph Dashboard</h1>
     <div style="display:flex;align-items:center;gap:16px;">
       <span class="refresh-info" id="refreshInfo">Refreshes every 3s</span>
-      <div class="status">
-        <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Connecting...</span>
+      <div class="status-lights">
+        <div class="status-light" title="Agent server is running">
+          <span class="status-dot" id="agentDot"></span>
+          <span class="label">Agent</span>
+        </div>
+        <div class="status-light" title="SillyTavern extension connected (activity in last 30s)">
+          <span class="status-dot offline" id="stDot"></span>
+          <span class="label">ST Extension</span>
+        </div>
+        <div class="status-light" id="rpLight" title="RP LLM backend reachable">
+          <span class="status-dot disabled" id="rpDot"></span>
+          <span class="label">RP LLM</span>
+        </div>
+        <div class="status-light" id="instructLight" title="Instruct LLM backend reachable">
+          <span class="status-dot disabled" id="instructDot"></span>
+          <span class="label">Instruct LLM</span>
+        </div>
       </div>
     </div>
   </div>
@@ -369,10 +387,32 @@ function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s
 // ── Health check ──────────────────────────────────────
 async function checkHealth() {
   const d = await apiFetch('/health');
-  const dot = document.getElementById('statusDot');
-  const txt = document.getElementById('statusText');
-  if (d && d.status === 'ok') { dot.classList.remove('offline'); txt.textContent = 'Connected'; return true; }
-  dot.classList.add('offline'); txt.textContent = 'Offline'; return false;
+  if (!d || d.status !== 'ok') {
+    // Agent itself is down — all lights red
+    document.getElementById('agentDot').className = 'status-dot offline';
+    document.getElementById('stDot').className = 'status-dot offline';
+    document.getElementById('rpDot').className = 'status-dot offline';
+    document.getElementById('instructDot').className = 'status-dot offline';
+    return false;
+  }
+
+  // Agent is up
+  document.getElementById('agentDot').className = 'status-dot';
+
+  // ST Extension: green if recently active
+  document.getElementById('stDot').className = 'status-dot' + (d.st_extension ? '' : ' offline');
+
+  // RP LLM: green/red/disabled
+  const rpDot = document.getElementById('rpDot');
+  if (d.rp_llm_disabled) { rpDot.className = 'status-dot disabled'; }
+  else { rpDot.className = 'status-dot' + (d.rp_llm ? '' : ' offline'); }
+
+  // Instruct LLM: green/red/disabled
+  const iDot = document.getElementById('instructDot');
+  if (d.instruct_llm_disabled) { iDot.className = 'status-dot disabled'; }
+  else { iDot.className = 'status-dot' + (d.instruct_llm ? '' : ' offline'); }
+
+  return true;
 }
 
 // ── Pipeline renderer ─────────────────────────────────
