@@ -963,12 +963,7 @@ async def chat_completions(request: Request):
                             pipeline_tracker.step("extraction", "State Extraction", data={"changes": result.get("changes_applied", 0)}, changes=ws)
                         else:
                             pipeline_tracker.step("extraction", "State Extraction", preview="No changes extracted")
-                            session_id=meta.session_id,
-                            message_id=meta.message_id,
-                            swipe_index=meta.swipe_index,
-                            assistant_response=response_text,
-                            conversation_context=conv_context,
-                        )
+
                         if result.get("success"):
                             logger.info(
                                 f"State extracted: {result.get('changes_applied', 0)} fields "
