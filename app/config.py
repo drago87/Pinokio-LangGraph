@@ -287,11 +287,25 @@ class ConfigManager:
 
     # ── Extension sync ─────────────────────────────────────────
 
+    # Keys that must never be overwritten with empty/invalid values.
+    # If the extension sends an empty string for these, we keep the
+    # existing config.ini / default value as a fallback.
+    _PROTECTED_URL_KEYS = frozenset({
+        "rp_llm_url",
+        "instruct_llm_url",
+    })
+
     def update_from_extension(self, data: dict) -> dict:
         """Apply config received from SillyTavern extension.
 
-        Extension values OVERWRITE config.ini values. The extension
-        sends lower_snake_case keys. Only known fields are applied.
+        Extension values OVERWRITE config.ini values — EXCEPT for URL
+        fields.  If the extension sends an empty/whitespace URL, the
+        existing config.ini (or built-in default) value is preserved.
+        This prevents a misconfigured extension from nuking the
+        fallback addresses that were set in config.ini.
+
+        The extension sends lower_snake_case keys. Only known fields
+        are applied.
 
         Returns a dict of applied changes for logging.
         """
@@ -327,6 +341,18 @@ class ConfigManager:
             attr, coerce = KEY_MAP[key]
             old_value = getattr(self.config, attr)
             new_value = coerce(value) if coerce else value
+
+            # --- URL protection: reject empty / whitespace values ---
+            # If the extension sends an empty URL, keep whatever we
+            # already have (config.ini or built-in default).
+            if key in self._PROTECTED_URL_KEYS:
+                if not new_value or not str(new_value).strip():
+                    logger.info(
+                        f"Config: ignoring empty {key} from extension, "
+                        f"keeping existing value: {old_value}"
+                    )
+                    continue
+
             setattr(self.config, attr, new_value)
             applied[key] = {"old": old_value, "new": new_value}
             logger.debug(f"Config updated: {key} = {new_value}")
@@ -343,16 +369,24 @@ class ConfigManager:
         """Return fully-formed URLs for both LLM endpoints.
 
         Ensures URLs have a scheme prefix and strips trailing slashes.
+        If a URL is empty or invalid, falls back to the built-in default
+        so the agent never tries to connect to a broken address.
         """
-        def normalize(url: str) -> str:
-            url = url.strip()
+        def normalize(url: str, default: str) -> str:
+            url = (url or "").strip()
+            if not url:
+                url = default
             if not url.startswith("http://") and not url.startswith("https://"):
                 url = f"http://{url}"
             return url.rstrip("/")
 
         return {
-            "rp_llm_url": normalize(self.config.rp_llm_url),
-            "instruct_llm_url": normalize(self.config.instruct_llm_url),
+            "rp_llm_url": normalize(
+                self.config.rp_llm_url, DEFAULTS["rp_llm"]["url"]
+            ),
+            "instruct_llm_url": normalize(
+                self.config.instruct_llm_url, DEFAULTS["instruct_llm"]["url"]
+            ),
         }
 
     def get_resolved_path(self, relative_path: str) -> Path:
