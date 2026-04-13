@@ -416,6 +416,7 @@ function renderPipeline(data) {
     }).join('');
     const rp = run.response_preview || '';
     return `<div class="run-card ${isOpen ? 'open' : ''}" onclick="this.classList.toggle('open')"><div class="run-header"><div class="run-meta"><span class="chevron">&#9654;</span><span class="run-id">Run #${data.runs.length - i}</span><span class="run-badge ${bc}">${esc(run.status)}</span><span style="color:var(--text-dim)">session=<code>${esc(run.session_id)}</code> msg=<code>${run.message_id}</code> type=<code>${esc(run.type)}</code></span></div><div style="display:flex;align-items:center;gap:10px;">${run.duration_ms ? `<span class="run-time">${run.duration_ms}ms</span>` : ''}<span class="run-time">${esc(run.timestamp)}</span></div></div><div class="run-details">${stepsHtml}${rp ? `<div class="step" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;"><span class="step-icon" style="color:var(--accent)">&#8618;</span><div class="step-body"><div class="step-name" style="color:var(--accent)">Returned to SillyTavern</div><div class="step-preview response-box">${esc(rp)}</div></div></div>` : ''}</div></div>`;
+  }).join('');
 }
 
 // ── Session list rendering ──────────────────────────────────
@@ -538,6 +539,16 @@ function renderDebugState(data) {
   const resetBtn = document.getElementById('btnDebugReset');
   const info = document.getElementById('debugInfo');
 
+  // Diagnostic: log the raw debug state so we can see what the server returns
+  console.log('[Dashboard] renderDebugState:', JSON.stringify({
+    enabled: data.enabled,
+    active: data.active,
+    waiting: data.waiting,
+    hasCurrent: !!data.current,
+    currentKeys: data.current ? Object.keys(data.current) : [],
+    completedCount: (data.completed || []).length,
+  }));
+
   // Toggle button state
   if (data.enabled) {
     toggleBtn.classList.remove('off');
@@ -553,9 +564,13 @@ function renderDebugState(data) {
     info.textContent = 'Debug stepping is OFF. Enable it to pause the pipeline at each step and inspect incoming/outgoing data.';
   }
 
-  // Waiting banner
-  if (data.waiting) {
+  // Waiting banner — show which step is paused
+  if (data.waiting && data.current) {
     waitingBanner.classList.add('visible');
+    const waitText = waitingBanner.querySelector('.debug-waiting-text');
+    if (waitText) {
+      waitText.textContent = 'Pipeline paused at: ' + (data.current.outgoing || 'unknown step');
+    }
   } else {
     waitingBanner.classList.remove('visible');
   }
@@ -571,62 +586,77 @@ function renderDebugState(data) {
   const completed = data.completed || [];
   const current = data.current;
   if (completed.length === 0 && !current) {
-    empty.style.display = '';
-    stepList.innerHTML = '';
+    // Recreate debugEmpty if it was destroyed by a previous innerHTML assignment
+    if (!document.getElementById('debugEmpty')) {
+      stepList.innerHTML = '<div class="debug-empty" id="debugEmpty"><div class="icon">&#128270;</div>No debug steps yet.<br><span style="font-size:12px;">Enable stepping and send a message to see steps here.</span></div>';
+    } else {
+      empty.style.display = '';
+    }
     return;
   }
 
-  empty.style.display = 'none';
+  if (empty) empty.style.display = 'none';
 
-  let html = '';
+  try {
+    let html = '';
 
-  // Build collapsible data panels for a step
-  function buildDataPanels(step) {
-    const data = step.data;
-    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-      return '<div class="debug-no-data">(no data payload)</div>';
+    // Build collapsible data panels for a step
+    function buildDataPanels(step) {
+      try {
+        const panelData = step.data;
+        if (!panelData || typeof panelData !== 'object' || Object.keys(panelData).length === 0) {
+          return '<div class="debug-no-data">(no data payload)</div>';
+        }
+        const jsonStr = JSON.stringify(panelData, null, 2);
+        const highlighted = syntaxHighlight(jsonStr);
+        return `
+          <div class="debug-collapse">
+            <div class="debug-collapse-header incoming" onclick="toggleDebugCollapse(this)">
+              <span class="debug-collapse-chevron">&#9654;</span>
+              Incoming Data
+            </div>
+            <div class="debug-collapse-body">${highlighted}</div>
+          </div>`;
+      } catch (panelErr) {
+        console.error('[Dashboard] buildDataPanels error:', panelErr);
+        return '<div class="debug-no-data" style="color:var(--red);">(error rendering data panel: ' + esc(panelErr.message) + ')</div>';
+      }
     }
-    const jsonStr = JSON.stringify(data, null, 2);
-    const highlighted = syntaxHighlight(jsonStr);
-    return `
-      <div class="debug-collapse">
-        <div class="debug-collapse-header incoming" onclick="toggleDebugCollapse(this)">
-          <span class="debug-collapse-chevron">&#9654;</span>
-          Incoming Data
+
+    // Completed steps
+    completed.forEach(step => {
+      html += `<div class="debug-step completed">
+        <span class="debug-step-icon done">&#10003;</span>
+        <div class="debug-step-body">
+          <div class="debug-step-time">${esc(step.timestamp)}</div>
+          <div class="debug-step-incoming">Incoming: ${esc(step.incoming)}</div>
+          <div class="debug-step-arrow">&rarr;</div>
+          <div class="debug-step-outgoing">Outgoing: ${esc(step.outgoing)}</div>
+          ${buildDataPanels(step)}
         </div>
-        <div class="debug-collapse-body">${highlighted}</div>
       </div>`;
+    });
+
+    // Current waiting step
+    if (current) {
+      html += `<div class="debug-step">
+        <span class="debug-step-icon waiting">&#9679;</span>
+        <div class="debug-step-body">
+          <div class="debug-step-time">${esc(current.timestamp)}</div>
+          <div class="debug-step-incoming">Incoming: ${esc(current.incoming)}</div>
+          <div class="debug-step-arrow">&rarr;</div>
+          <div class="debug-step-outgoing">Outgoing: ${esc(current.outgoing)}</div>
+          ${buildDataPanels(current)}
+        </div>
+      </div>`;
+    }
+
+    console.log('[Dashboard] stepList.innerHTML length:', html.length);
+    stepList.innerHTML = html;
+  } catch (err) {
+    console.error('[Dashboard] renderDebugState step rendering error:', err);
+    stepList.innerHTML = '<div class="debug-step" style="color:var(--red);">Error rendering debug steps: ' + esc(err.message) + '</div>';
   }
-
-  // Completed steps
-  completed.forEach(step => {
-    html += `<div class="debug-step completed">
-      <span class="debug-step-icon done">&#10003;</span>
-      <div class="debug-step-body">
-        <div class="debug-step-time">${esc(step.timestamp)}</div>
-        <div class="debug-step-incoming">Incoming: ${esc(step.incoming)}</div>
-        <div class="debug-step-arrow">&rarr;</div>
-        <div class="debug-step-outgoing">Outgoing: ${esc(step.outgoing)}</div>
-        ${buildDataPanels(step)}
-      </div>
-    </div>`;
-  });
-
-  // Current waiting step
-  if (current) {
-    html += `<div class="debug-step">
-      <span class="debug-step-icon waiting">&#9679;</span>
-      <div class="debug-step-body">
-        <div class="debug-step-time">${esc(current.timestamp)}</div>
-        <div class="debug-step-incoming">Incoming: ${esc(current.incoming)}</div>
-        <div class="debug-step-arrow">&rarr;</div>
-        <div class="debug-step-outgoing">Outgoing: ${esc(current.outgoing)}</div>
-        ${buildDataPanels(current)}
-      </div>
-    </div>`;
-  }
-
-  stepList.innerHTML = html;
 }
 
 async function toggleDebugStepping() {
