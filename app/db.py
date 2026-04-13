@@ -27,9 +27,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 # SQL schema — executed per session database
+# SQL for migrating an existing sessions table to add st_chat_id.
+_MIGRATION_ADD_ST_CHAT_ID = """
+ALTER TABLE sessions ADD COLUMN st_chat_id TEXT DEFAULT '';
+"""
+
 _SESSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id         TEXT PRIMARY KEY,
+    st_chat_id         TEXT DEFAULT '',
     character_name     TEXT DEFAULT '',
     character_description  TEXT DEFAULT '',
     character_personality TEXT DEFAULT '',
@@ -38,9 +44,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     character_mes_example TEXT DEFAULT '',
     persona_name       TEXT DEFAULT '',
     persona_description TEXT DEFAULT '',
-    mode               TEXT DEFAULT 'character',
-    multi_character    BOOLEAN DEFAULT FALSE,
-    tracked_characters TEXT DEFAULT '',
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     initialized        BOOLEAN DEFAULT FALSE
 );
@@ -95,35 +98,22 @@ class Database:
 
     # ── Session Management ─────────────────────────────────────
 
-    # Migration: add columns that didn't exist in older schema versions.
-    # SQLite doesn't support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we
-    # catch the duplicate-column error and ignore it.
-    _MIGRATION_COLUMNS = [
-        ("mode", "TEXT DEFAULT 'character'"),
-        ("multi_character", "BOOLEAN DEFAULT FALSE"),
-        ("tracked_characters", "TEXT DEFAULT ''"),
-    ]
+    def create_session(self, session_id: str, st_chat_id: str = "") -> bool:
+        """Create a new session database with schema.
 
-    def _migrate_session(self, conn: sqlite3.Connection):
-        """Add any missing columns to the sessions table."""
-        for col_name, col_def in self._MIGRATION_COLUMNS:
-            try:
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_def}")
-            except sqlite3.OperationalError:
-                pass  # Column already exists — ignore
-
-    def create_session(self, session_id: str) -> bool:
-        """Create a new session database with schema."""
+        Args:
+            session_id: Unique session UUID.
+            st_chat_id: Optional SillyTavern chat ID to link this session to.
+        """
         conn = self._get_conn(session_id)
         try:
             conn.executescript(_SESSION_SCHEMA)
-            self._migrate_session(conn)
             conn.execute(
-                "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
-                (session_id,),
+                "INSERT OR IGNORE INTO sessions (session_id, st_chat_id) VALUES (?, ?)",
+                (session_id, st_chat_id or ""),
             )
             conn.commit()
-            logger.info(f"Created session DB: {session_id}")
+            logger.info(f"Created session DB: {session_id} (st_chat_id={st_chat_id or 'none'})")
             return True
         except Exception as e:
             logger.error(f"Failed to create session {session_id}: {e}")
@@ -151,9 +141,6 @@ class Database:
                     character_mes_example = COALESCE(?, character_mes_example),
                     persona_name = COALESCE(?, persona_name),
                     persona_description = COALESCE(?, persona_description),
-                    mode = COALESCE(?, mode),
-                    multi_character = COALESCE(?, multi_character),
-                    tracked_characters = COALESCE(?, tracked_characters),
                     initialized = TRUE
                 WHERE session_id = ?
                 """,
@@ -166,11 +153,6 @@ class Database:
                     character_data.get("character_mes_example"),
                     character_data.get("persona_name"),
                     character_data.get("persona_description"),
-                    character_data.get("mode"),
-                    character_data.get("multi_character"),
-                    json.dumps(character_data.get("tracked_characters", []))
-                        if isinstance(character_data.get("tracked_characters"), list)
-                        else character_data.get("tracked_characters", ""),
                     session_id,
                 ),
             )
@@ -182,41 +164,6 @@ class Database:
             return False
         finally:
             conn.close()
-
-    def update_session_meta(self, session_id: str, updates: dict) -> bool:
-        """Update specific session metadata fields (mode, tracked_characters, etc.).
-
-        Accepts a dict of column names to new values. Only updates
-        the provided fields; leaves the rest unchanged.
-        """
-        if not updates:
-            return True
-        allowed = {"mode", "tracked_characters", "multi_character"}
-        filtered = {k: v for k, v in updates.items() if k in allowed}
-        if not filtered:
-            return True
-
-        # Serialize tracked_characters if it's a list
-        if "tracked_characters" in filtered and isinstance(filtered["tracked_characters"], list):
-            filtered["tracked_characters"] = json.dumps(filtered["tracked_characters"])
-
-        set_clause = ", ".join(f"{k} = ?" for k in filtered)
-        values = list(filtered.values()) + [session_id]
-        try:
-            conn = self._get_conn(session_id)
-            try:
-                conn.execute(
-                    f"UPDATE sessions SET {set_clause} WHERE session_id = ?",
-                    values,
-                )
-                conn.commit()
-                logger.info(f"Updated session {session_id} meta: {list(filtered.keys())}")
-                return True
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error(f"Failed to update session {session_id} meta: {e}")
-            return False
 
     def is_initialized(self, session_id: str) -> bool:
         """Check if a session has been initialized with character data."""
@@ -506,6 +453,74 @@ class Database:
             logger.debug(f"Message log failed (non-critical): {e}")
 
     # ── Maintenance ────────────────────────────────────────────
+
+    # ── st_chat_id lookups (Phase 1) ─────────────────────────
+
+    def find_session_by_st_chat_id(self, st_chat_id: str) -> Optional[str]:
+        """Find a session_id by its linked ST chat ID.
+
+        Scans all session databases and returns the first matching
+        session_id, or None if no session is linked to this chat.
+        """
+        if not st_chat_id:
+            return None
+
+        for sid in self.list_sessions():
+            try:
+                conn = self._get_conn(sid)
+                try:
+                    # Migrate if needed (add st_chat_id column)
+                    self._migrate_st_chat_id(conn)
+                    row = conn.execute(
+                        "SELECT session_id FROM sessions WHERE st_chat_id = ?",
+                        (st_chat_id,),
+                    ).fetchone()
+                    if row:
+                        return row["session_id"]
+                finally:
+                    conn.close()
+            except sqlite3.OperationalError:
+                continue
+        return None
+
+    def link_session_chat(self, session_id: str, st_chat_id: str) -> bool:
+        """Link an existing session to a ST chat ID."""
+        if not st_chat_id or not session_id:
+            return False
+
+        conn = self._get_conn(session_id)
+        try:
+            self._migrate_st_chat_id(conn)
+            conn.execute(
+                "UPDATE sessions SET st_chat_id = ? WHERE session_id = ?",
+                (st_chat_id, session_id),
+            )
+            conn.commit()
+            logger.info(f"Linked session {session_id} to st_chat_id {st_chat_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to link session: {e}")
+            return False
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _migrate_st_chat_id(conn: sqlite3.Connection):
+        """Add st_chat_id column to an existing sessions table if missing.
+
+        This is a lightweight migration for databases created before
+        the Phase 1 update.  It is idempotent (safe to call repeatedly).
+        """
+        try:
+            cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            ]
+            if "st_chat_id" not in cols:
+                conn.execute(_MIGRATION_ADD_ST_CHAT_ID)
+                conn.commit()
+                logger.debug("Migrated sessions table: added st_chat_id column")
+        except Exception as e:
+            logger.debug(f"Migration check skipped: {e}")
 
     def list_sessions(self) -> List[str]:
         """List all session IDs that have database files."""

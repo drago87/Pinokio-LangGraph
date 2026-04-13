@@ -9,9 +9,7 @@ Endpoints:
   POST /v1/chat/completions  — Main pipeline (receives from ST extension)
   POST /api/sessions          — Create a new session
   POST /api/sessions/{id}/init — Initialize session with character data
-  POST /api/sessions/{id}/config — Update session config mid-session
   POST /api/config            — Receive config from ST extension
-  POST /api/ping              — Extension heartbeat (updates activity timestamp)
   POST /api/stop              — Stop current generation (called by ST extension)
   GET  /health                — Health check
   GET  /api/sessions          — List sessions
@@ -76,69 +74,11 @@ config_manager: Optional[ConfigManager] = None
 database: Optional[Database] = None
 client_manager: Optional[LLMClientManager] = None
 
-# Track last activity from ST extension (any request from extension updates this)
-_last_extension_activity: float = 0.0
-
 # Pending background tasks (for tracking + cancellation)
 _background_tasks: set = set()
 
 # Abort event: set by /api/stop to signal active streams to halt
 _abort_event: asyncio.Event = asyncio.Event()
-
-# ── Debug Stepping ──────────────────────────────────────────
-# When debug_mode is enabled in config.ini, the pipeline pauses at
-# each breakpoint and waits for the user to click "Play" in the
-# dashboard before continuing to the next step.
-
-_debug_continue: asyncio.Event = asyncio.Event()
-_debug_state: Dict[str, Any] = {
-    "active": False,
-    "paused": False,
-    "step": 0,
-    "total_steps": 3,
-    "done_text": "",
-    "next_text": "",
-    "data": {},
-    "log": [],
-}
-
-
-async def _debug_wait(done_text: str, next_text: str, data: dict = None):
-    """Pause pipeline execution when debug mode is enabled.
-
-    Updates the debug state (visible in the dashboard) and blocks
-    until the user clicks the Play button (POST /api/debug/continue).
-    """
-    if not config_manager or not config_manager.config.debug_mode:
-        return
-
-    _debug_state["active"] = True
-    _debug_state["paused"] = True
-    _debug_state["step"] += 1
-    _debug_state["done_text"] = done_text
-    _debug_state["next_text"] = next_text
-    _debug_state["data"] = data or {}
-    _debug_state["log"].append({
-        "step": _debug_state["step"],
-        "done": done_text,
-        "time": datetime.now().strftime("%H:%M:%S"),
-    })
-
-    _debug_continue.clear()
-    logger.info(
-        f"[DEBUG] PAUSED at step {_debug_state['step']}/{_debug_state['total_steps']} "
-        f"— {next_text}"
-    )
-
-    try:
-        await _debug_continue.wait()
-    except asyncio.CancelledError:
-        logger.info("[DEBUG] Wait cancelled (request disconnected)")
-        _debug_state["paused"] = False
-        raise
-
-    logger.info("[DEBUG] RESUMED — proceeding")
-    _debug_state["paused"] = False
 
 # ── Pipeline Tracker ──────────────────────────────────────
 # Stores recent pipeline runs in memory for the dashboard.
@@ -261,65 +201,19 @@ app.add_middleware(
 
 # ── Health ────────────────────────────────────────────────────
 
-def _touch_extension_activity():
-    """Update last-extension-seen timestamp."""
-    global _last_extension_activity
-    _last_extension_activity = time.time()
-
-
 @app.get("/health")
 async def health():
-    """Health check endpoint — also probes RP and Instruct LLM backends."""
-    import time as _time
+    """Health check endpoint."""
     cfg = config_manager.config if config_manager else None
-
-    # Check ST extension connectivity (seen activity in last 6 minutes;
-    # the extension sends a passive heartbeat every 5 minutes)
-    st_connected = (_time.time() - _last_extension_activity) < 360
-
-    # Probe RP LLM backend
-    rp_ok = False
-    rp_disabled = cfg.rp_llm_disabled if cfg else False
-    if not rp_disabled and client_manager and client_manager._rp_client:
-        try:
-            rp_ok = await client_manager._rp_client.health_check()
-        except Exception:
-            rp_ok = False
-
-    # Probe Instruct LLM backend
-    instruct_ok = False
-    instruct_disabled = cfg.instruct_llm_disabled if cfg else False
-    if not instruct_disabled and client_manager and client_manager._instruct_client:
-        try:
-            instruct_ok = await client_manager._instruct_client.health_check()
-        except Exception:
-            instruct_ok = False
-
     return {
         "status": "ok",
         "version": "2.0.0",
         "sessions": len(database.list_sessions()) if database else 0,
         "debug_mode": cfg.debug_mode if cfg else False,
         "dry_run": cfg.dry_run if cfg else False,
-        "rp_llm_disabled": rp_disabled,
-        "instruct_llm_disabled": instruct_disabled,
-        "st_extension": st_connected,
-        "rp_llm": rp_ok,
-        "instruct_llm": instruct_ok,
+        "rp_llm_disabled": cfg.rp_llm_disabled if cfg else False,
+        "instruct_llm_disabled": cfg.instruct_llm_disabled if cfg else False,
     }
-
-
-# ── Extension Heartbeat ────────────────────────────────────
-
-@app.post("/api/ping")
-async def extension_ping():
-    """Heartbeat endpoint called by the ST extension every 5 minutes.
-
-    Updates the last-extension-seen timestamp so the dashboard's
-    ST Extension indicator stays green between active requests.
-    """
-    _touch_extension_activity()
-    return {"status": "pong"}
 
 
 # ── Dashboard ─────────────────────────────────────────────
@@ -372,11 +266,11 @@ async def dashboard_config():
         "dry_run": cfg.dry_run,
         "rp_llm_url": cfg.rp_llm_url,
         "rp_llm_backend": cfg.rp_llm_backend,
-        "rp_llm_model": cfg.rp_llm_model or "",
+        "rp_llm_model": cfg.rp_model or "",
         "rp_llm_disabled": cfg.rp_llm_disabled,
         "instruct_llm_url": cfg.instruct_llm_url,
         "instruct_llm_backend": cfg.instruct_llm_backend,
-        "instruct_llm_model": cfg.instruct_llm_model or "",
+        "instruct_llm_model": cfg.instruct_model or "",
         "instruct_llm_disabled": cfg.instruct_llm_disabled,
         "thinking_steps": cfg.thinking_steps,
         "refinement_steps": cfg.refinement_steps,
@@ -400,13 +294,13 @@ async def list_models():
 
     if not cfg.rp_llm_disabled:
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
         )
         models.extend(await rp_client.list_models())
 
     if not cfg.instruct_llm_disabled:
         instruct_client = client_manager.get_instruct_client(
-            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
+            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
         )
         models.extend(await instruct_client.list_models())
 
@@ -416,25 +310,35 @@ async def list_models():
     }
 
 
-# ── Config Endpoint ───────────────────────────────────────────
-
-
 # ── Session Endpoints ─────────────────────────────────────────
 
 @app.post("/api/sessions")
-async def create_session():
-    """Create a new session. Returns a session_id UUID."""
+async def create_session(request: Request):
+    """Create a new session. Returns a session_id UUID.
+
+    Optional body field ``st_chat_id`` links the session to a
+    SillyTavern chat so the extension can look it up later via
+    GET /api/sessions/by-chat.
+    """
     if not database:
         raise HTTPException(503, "Database not initialized")
 
+    # Parse optional body (may be empty or omitted entirely)
+    st_chat_id = ""
+    try:
+        body = await request.json()
+        st_chat_id = (body or {}).get("st_chat_id", "") or ""
+    except Exception:
+        pass
+
     session_id = str(uuid.uuid4())
-    success = database.create_session(session_id)
+    success = database.create_session(session_id, st_chat_id=st_chat_id)
 
     if not success:
         raise HTTPException(500, "Failed to create session")
 
-    logger.info(f"Session created: {session_id}")
-    return {"session_id": session_id}
+    logger.info(f"Session created: {session_id} (st_chat_id={st_chat_id or 'none'})")
+    return {"session_id": session_id, "st_chat_id": st_chat_id}
 
 
 @app.get("/api/sessions")
@@ -477,10 +381,59 @@ async def get_session(session_id: str):
     }
 
 
+@app.get("/api/sessions/by-chat")
+async def find_session_by_chat(st_chat_id: str):
+    """Look up a session by its linked SillyTavern chat ID.
+
+    Returns ``{session_id: "..."}`` if found, or 404.
+    """
+    if not database:
+        raise HTTPException(503, "Database not initialized")
+
+    if not st_chat_id:
+        raise HTTPException(400, "st_chat_id query parameter is required")
+
+    session_id = database.find_session_by_st_chat_id(st_chat_id)
+    if not session_id:
+        raise HTTPException(404, "No session linked to this chat ID")
+
+    return {"session_id": session_id, "st_chat_id": st_chat_id}
+
+
+@app.post("/api/sessions/{session_id}/link-chat")
+async def link_session_chat(session_id: str, request: Request):
+    """Link an existing session to a SillyTavern chat ID.
+
+    Used when the extension detects that a local session exists
+    but the Agent does not yet know about the chat ID mapping.
+    """
+    if not database:
+        raise HTTPException(503, "Database not initialized")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+
+    st_chat_id = (body or {}).get("st_chat_id", "") or ""
+    if not st_chat_id:
+        raise HTTPException(400, "st_chat_id is required")
+
+    success = database.link_session_chat(session_id, st_chat_id)
+    if not success:
+        raise HTTPException(500, "Failed to link session")
+
+    logger.info(f"Session {session_id} linked to st_chat_id {st_chat_id}")
+    return {
+        "session_id": session_id,
+        "st_chat_id": st_chat_id,
+        "status": "linked",
+    }
+
+
 @app.post("/api/sessions/{session_id}/init")
 async def init_session(session_id: str, request: Request):
     """Initialize a session with character card data."""
-    _touch_extension_activity()
     if not database:
         raise HTTPException(503, "Database not initialized")
 
@@ -494,10 +447,6 @@ async def init_session(session_id: str, request: Request):
 
     logger.info(f"Initializing session {session_id} with character data...")
     logger.debug(f"  Character data keys: {list(body.keys())}")
-    mode = body.get("mode", "character")
-    multi_char = body.get("multi_character", False)
-    tracked = body.get("tracked_characters", [])
-    logger.info(f"  Mode: {mode}, Multi-character: {multi_char}, Tracked: {tracked}")
     success = database.init_session(session_id, body)
 
     if not success:
@@ -515,7 +464,7 @@ async def init_session(session_id: str, request: Request):
             try:
                 urls = config_manager.get_effective_urls()
                 instruct_client = client_manager.get_instruct_client(
-                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
+                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
                 )
                 pipeline = ExtractionPipeline(
                     database, instruct_client, str(config_manager.prompts_dir_path)
@@ -524,23 +473,7 @@ async def init_session(session_id: str, request: Request):
                 desc = body.get("character_description", "")
                 scenario = body.get("character_scenario", "")
                 first_mes = body.get("character_first_mes", "")
-                personality = body.get("character_personality", "")
-                combined = f"Character: {body.get('character_name', '')}\n\nPersonality: {personality}\n\nDescription: {desc}\n\nScenario: {scenario}\n\nFirst Message: {first_mes}"
-
-                # Parse tracked characters from body
-                tracked = body.get("tracked_characters", [])
-                if isinstance(tracked, str):
-                    try:
-                        tracked = json.loads(tracked)
-                    except (json.JSONDecodeError, TypeError):
-                        tracked = [t.strip() for t in tracked.split(",") if t.strip()] if tracked else []
-                if not isinstance(tracked, list):
-                    tracked = []
-
-                # If no tracked characters set but we have a character name, track it
-                char_name = body.get("character_name", "")
-                if not tracked and char_name:
-                    tracked = [char_name]
+                combined = f"Character: {body.get('character_name', '')}\n{desc}\n{scenario}\n{first_mes}"
 
                 result = await pipeline.run(
                     session_id=session_id,
@@ -548,18 +481,11 @@ async def init_session(session_id: str, request: Request):
                     swipe_index=0,
                     assistant_response=combined,
                     conversation_context="Initial character data extraction",
-                    mode=mode,
-                    character_name=char_name,
-                    persona_name=body.get("persona_name", ""),
-                    tracked_characters=tracked,
-                    character_description=combined,
-                    is_initial=True,
                 )
                 logger.info(
                     f"Initial state extraction: "
                     f"{'success' if result.get('success') else 'failed'}, "
-                    f"{result.get('changes_applied', 0)} fields, "
-                    f"mode={mode}, tracked={tracked}"
+                    f"{result.get('changes_applied', 0)} fields"
                 )
             except Exception as e:
                 logger.error(f"Background initial extraction failed: {e}")
@@ -575,40 +501,6 @@ async def init_session(session_id: str, request: Request):
     }
 
 
-@app.patch("/api/sessions/{session_id}/config")
-async def update_session_config(session_id: str, request: Request):
-    """Update session-level config (mode, tracked_characters) mid-session.
-
-    Called by the extension when the user changes character settings
-    from the Character Management panel.
-    """
-    _touch_extension_activity()
-    if not database:
-        raise HTTPException(503, "Database not initialized")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON body")
-
-    updates = {}
-    if "mode" in body:
-        if body["mode"] not in ("character", "scenario"):
-            raise HTTPException(400, f"Invalid mode: {body['mode']}")
-        updates["mode"] = body["mode"]
-    if "tracked_characters" in body:
-        updates["tracked_characters"] = body["tracked_characters"]
-
-    if not updates:
-        raise HTTPException(400, "No updatable fields provided")
-
-    ok = database.update_session_meta(session_id, updates)
-    if not ok:
-        raise HTTPException(500, "Failed to update session config")
-
-    return {"status": "ok", "updated": list(updates.keys())}
-
-
 # ── Config Endpoint ───────────────────────────────────────────
 
 @app.post("/api/config")
@@ -617,7 +509,6 @@ async def receive_config(request: Request):
 
     Extension values OVERWRITE config.ini values.
     """
-    _touch_extension_activity()
     if not config_manager:
         raise HTTPException(503, "Agent not ready")
 
@@ -642,12 +533,12 @@ async def receive_config(request: Request):
         "rp": {
             "url": urls["rp_llm_url"],
             "template": cfg.rp_template,
-            "model": cfg.rp_llm_model,
+            "model": cfg.rp_model,
         },
         "instruct": {
             "url": urls["instruct_llm_url"],
             "template": cfg.instruct_template,
-            "model": cfg.instruct_llm_model,
+            "model": cfg.instruct_model,
         },
     })
 
@@ -668,7 +559,6 @@ async def stop_generation():
     Ollama:    Closing the upstream connection is sufficient
     Generic:   Closing the upstream connection is sufficient
     """
-    _touch_extension_activity()
     global _abort_event
 
     # Set the abort signal so the streaming generator stops on next iteration
@@ -708,47 +598,6 @@ async def stop_generation():
     asyncio.create_task(_reset_abort())
 
     return {"status": "stopped", "message": "Generation abort signal sent"}
-
-
-# ── Debug Stepping Endpoints ──────────────────────────────────
-
-@app.get("/api/debug/status")
-async def debug_status():
-    """Return current debug stepping state for the dashboard.
-
-    The dashboard polls this endpoint to show the current breakpoint,
-    what was just completed, what's next, and the Play button.
-    """
-    return {
-        "debug_mode": config_manager.config.debug_mode if config_manager else False,
-        **_debug_state,
-    }
-
-
-@app.post("/api/debug/continue")
-async def debug_continue():
-    """Resume a paused pipeline step.
-
-    Called by the dashboard Play button. Sets the continue event so
-    the pipeline's _debug_wait() call unblocks.
-    """
-    if not _debug_state["paused"]:
-        return {"status": "not_paused", "message": "Pipeline is not currently paused"}
-    _debug_continue.set()
-    return {"status": "resumed", "message": "Pipeline resumed"}
-
-
-@app.post("/api/debug/reset")
-async def debug_reset():
-    """Reset debug state (clear log, step counter, etc.)."""
-    _debug_state["active"] = False
-    _debug_state["paused"] = False
-    _debug_state["step"] = 0
-    _debug_state["done_text"] = ""
-    _debug_state["next_text"] = ""
-    _debug_state["data"] = {}
-    _debug_state["log"] = []
-    return {"status": "reset"}
 
 
 # ── Dry-run helpers ───────────────────────────────────────────
@@ -815,7 +664,6 @@ def _dry_run_stream(text: str, model: str = "dry-run"):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """Main chat completion endpoint."""
-    _touch_extension_activity()
     if not config_manager or not database or not client_manager:
         raise HTTPException(503, "Agent not ready")
 
@@ -849,7 +697,7 @@ async def chat_completions(request: Request):
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
         )
         return StreamingResponse(
             _passthrough_stream(rp_client, clean_messages, body),
@@ -860,19 +708,12 @@ async def chat_completions(request: Request):
     logger.info(
         f"[Pipeline] session={meta.session_id[:8]}... "
         f"msg={meta.message_id} type={meta.type} "
-        f"swipe={meta.swipe_index} char={meta.character_name} "
-        f"mode={meta.mode} tracked={meta.tracked_list}"
+        f"swipe={meta.swipe_index}"
     )
 
     # ── Track pipeline run for dashboard ────────────────────
     pipeline_tracker.start_run(meta.session_id, meta.message_id, meta.type)
-    pipeline_tracker.step("received", "Received from SillyTavern", data={
-        "messages": len(clean_messages),
-        "character_name": meta.character_name,
-        "persona_name": meta.persona_name,
-        "mode": meta.mode,
-        "tracked": meta.tracked_list,
-    })
+    pipeline_tracker.step("received", "Received from SillyTavern", data={"messages": len(clean_messages)})
     user_preview = ""
     for m in reversed(clean_messages):
         if m.get("role") == "user" and m.get("content"):
@@ -884,13 +725,6 @@ async def chat_completions(request: Request):
     # ── DRY RUN: show what was received ───────────────────────
     if cfg.dry_run:
         _log_dry_run_receive(body, meta, clean_messages)
-
-    # ── DEBUG BREAKPOINT 1: After parsing ──────────────────────
-    await _debug_wait(
-        f"Received data from ST — {len(clean_messages)} messages, session={meta.session_id[:8]}",
-        f"Preparing to handle {meta.type} (swipe/redo check)",
-        {"messages": len(clean_messages), "session_id": meta.session_id[:8], "type": meta.type, "character": meta.character_name, "mode": meta.mode},
-    )
 
     # ── Step 2: Handle swipe/redo ─────────────────────────────
     if meta.type == "swipe":
@@ -909,16 +743,9 @@ async def chat_completions(request: Request):
             logger.info(f"Reverted {reverted} state fields for redo")
         pipeline_tracker.step("redo", "Redo Handling", data={"reverted": reverted or 0}, status="warn" if reverted else "done")
 
-    # ── DEBUG BREAKPOINT 2: After swipe/redo ─────────────────
-    await _debug_wait(
-        f"Swipe/redo handled — {reverted or 0} fields reverted" if reverted else "No swipe/redo needed",
-        "Preparing to translate world state (Instruct LLM)",
-        {"reverted": reverted or 0},
-    )
-
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
-        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
+        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
     )
 
     world_summary = ""
@@ -954,7 +781,7 @@ async def chat_completions(request: Request):
 
     # ── Step 6: Thinking passes (optional) ────────────────────
     rp_client = client_manager.get_rp_client(
-        urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
+        urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
     )
 
     thinking_notes = []
@@ -985,14 +812,6 @@ async def chat_completions(request: Request):
     stream_temperature = body.get("temperature", 0.8)
     stream_max_tokens = body.get("max_tokens", 2048)
 
-    # ── DEBUG BREAKPOINT 3: After formatting, before send ──────
-    await _debug_wait(
-        f"Messages prepared — {len(formatted_messages)} formatted msgs, template={cfg.rp_template}"
-        + (f", {len(thinking_notes)} thinking notes" if thinking_notes else ""),
-        f"Preparing to send to RP LLM at {urls['rp_llm_url']}",
-        {"messages": len(formatted_messages), "template": cfg.rp_template, "thinking_notes": len(thinking_notes), "rp_url": urls["rp_llm_url"], "temperature": stream_temperature, "max_tokens": stream_max_tokens},
-    )
-
     # DRY RUN: show what we WOULD send to RP LLM
     if cfg.dry_run:
         _log_dry_run_send(
@@ -1013,7 +832,7 @@ async def chat_completions(request: Request):
                 f"RP LLM target: {urls['rp_llm_url']} (disabled={cfg.rp_llm_disabled})\n"
                 f"Instruct LLM target: {urls['instruct_llm_url']} (disabled={cfg.instruct_llm_disabled})\n"
                 f"\nCheck the Pinokio terminal for full message logs.",
-                model=cfg.rp_llm_model or "dry-run",
+                model=cfg.rp_model or "dry-run",
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -1024,7 +843,7 @@ async def chat_completions(request: Request):
         logger.info("[RP LLM DISABLED] Returning placeholder response")
         placeholder = "[RP LLM DISABLED] The RP LLM is turned off in config.ini. No narrative was generated."
         return StreamingResponse(
-            _dry_run_stream(placeholder, model=cfg.rp_llm_model or "rp-disabled"),
+            _dry_run_stream(placeholder, model=cfg.rp_model or "rp-disabled"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -1061,7 +880,7 @@ async def chat_completions(request: Request):
                         "finish_reason": None,
                         "index": 0,
                     }],
-                    "model": cfg.rp_llm_model or "agent-statesync",
+                    "model": cfg.rp_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {payload}\n\n"
@@ -1076,7 +895,7 @@ async def chat_completions(request: Request):
                         "finish_reason": "stop",
                         "index": 0,
                     }],
-                    "model": cfg.rp_llm_model or "agent-statesync",
+                    "model": cfg.rp_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {finish}\n\n"
@@ -1128,26 +947,6 @@ async def chat_completions(request: Request):
                 if user_msgs:
                     conv_context = f"Latest user message:\n{user_msgs[-1].get('content', '')}"
 
-                # Get session mode and tracked characters from DB
-                session_meta = database.get_session(meta.session_id)
-                session_mode = meta.mode  # From the current request
-                if session_meta:
-                    # If the request didn't include mode, fall back to session
-                    if not session_mode or session_mode == "character":
-                        session_mode = session_meta.get("mode", "character")
-
-                # Parse tracked characters from session DB or current meta
-                tracked_chars = meta.tracked_list
-                if not tracked_chars and session_meta:
-                    tc_str = session_meta.get("tracked_characters", "")
-                    if tc_str:
-                        try:
-                            tracked_chars = json.loads(tc_str) if isinstance(tc_str, str) else tc_str
-                        except (json.JSONDecodeError, TypeError):
-                            tracked_chars = [t.strip() for t in tc_str.split(",") if t.strip()]
-                if not tracked_chars and meta.character_name:
-                    tracked_chars = [meta.character_name]
-
                 async def _extract_state():
                     try:
                         result = await extraction_pipe.run(
@@ -1156,42 +955,33 @@ async def chat_completions(request: Request):
                             swipe_index=meta.swipe_index,
                             assistant_response=response_text,
                             conversation_context=conv_context,
-                            mode=session_mode,
-                            character_name=meta.character_name,
-                            persona_name=meta.persona_name,
-                            tracked_characters=tracked_chars,
-                            is_initial=False,
                         )
 
                         # Track extraction result for dashboard
                         if result.get("success"):
                             ws = database.get_world_state(meta.session_id)
-                            pipeline_tracker.step("extraction", "State Extraction",
-                                data={
-                                    "changes": result.get("changes_applied", 0),
-                                    "mode": session_mode,
-                                    "tracked": tracked_chars,
-                                },
-                                changes=ws,
-                            )
+                            pipeline_tracker.step("extraction", "State Extraction", data={"changes": result.get("changes_applied", 0)}, changes=ws)
+                        else:
+                            pipeline_tracker.step("extraction", "State Extraction", preview="No changes extracted")
+                            session_id=meta.session_id,
+                            message_id=meta.message_id,
+                            swipe_index=meta.swipe_index,
+                            assistant_response=response_text,
+                            conversation_context=conv_context,
+                        )
+                        if result.get("success"):
                             logger.info(
                                 f"State extracted: {result.get('changes_applied', 0)} fields "
-                                f"(msg={meta.message_id}, swipe={meta.swipe_index}, "
-                                f"mode={session_mode}, tracked={tracked_chars})"
+                                f"(msg={meta.message_id}, swipe={meta.swipe_index})"
                             )
                         else:
-                            pipeline_tracker.step("extraction", "State Extraction",
-                                preview="No changes extracted",
-                                data={"mode": session_mode, "tracked": tracked_chars},
-                            )
                             logger.debug(
                                 f"No state changes extracted "
-                                f"(msg={meta.message_id}, mode={session_mode})"
+                                f"(msg={meta.message_id})"
                             )
                     except Exception as e:
                         logger.error(f"Background state extraction error: {e}")
-                        pipeline_tracker.step("extraction", "State Extraction",
-                            status="warn", preview=f"Failed: {e}")
+                        pipeline_tracker.step("extraction", "State Extraction", status="warn", preview=f"Failed: {e}")
 
                 task = asyncio.create_task(_extract_state())
                 _background_tasks.add(task)
