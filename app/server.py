@@ -361,6 +361,27 @@ async def list_sessions():
     return {"sessions": sessions}
 
 
+@app.get("/api/sessions/by-chat")
+async def find_session_by_chat(st_chat_id: str):
+    """Look up a session by its linked SillyTavern chat ID.
+
+    Returns ``{session_id: "..."}`` if found, or 404.
+    NOTE: This route MUST be defined before /api/sessions/{session_id}
+          so FastAPI doesn't match "by-chat" as a session_id.
+    """
+    if not database:
+        raise HTTPException(503, "Database not initialized")
+
+    if not st_chat_id:
+        raise HTTPException(400, "st_chat_id query parameter is required")
+
+    session_id = database.find_session_by_st_chat_id(st_chat_id)
+    if not session_id:
+        raise HTTPException(404, "No session linked to this chat ID")
+
+    return {"session_id": session_id, "st_chat_id": st_chat_id}
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     """Get session metadata and stats."""
@@ -379,25 +400,6 @@ async def get_session(session_id: str):
         **(stats or {}),
         "world_state": world_state,
     }
-
-
-@app.get("/api/sessions/by-chat")
-async def find_session_by_chat(st_chat_id: str):
-    """Look up a session by its linked SillyTavern chat ID.
-
-    Returns ``{session_id: "..."}`` if found, or 404.
-    """
-    if not database:
-        raise HTTPException(503, "Database not initialized")
-
-    if not st_chat_id:
-        raise HTTPException(400, "st_chat_id query parameter is required")
-
-    session_id = database.find_session_by_st_chat_id(st_chat_id)
-    if not session_id:
-        raise HTTPException(404, "No session linked to this chat ID")
-
-    return {"session_id": session_id, "st_chat_id": st_chat_id}
 
 
 @app.post("/api/sessions/{session_id}/link-chat")
