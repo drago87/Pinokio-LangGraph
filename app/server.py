@@ -247,7 +247,7 @@ async def dashboard_sessions():
         sessions.append({
             "session_id": sid,
             "character_name": meta.get("character_name", "") if meta else "",
-            "message_count": stats.get("message_count", 0),
+            "message_count": stats.get("logged_messages", 0),
             "world_state": ws,
             "initialized": database.is_initialized(sid),
         })
@@ -266,11 +266,11 @@ async def dashboard_config():
         "dry_run": cfg.dry_run,
         "rp_llm_url": cfg.rp_llm_url,
         "rp_llm_backend": cfg.rp_llm_backend,
-        "rp_llm_model": cfg.rp_model or "",
+        "rp_llm_model": cfg.rp_llm_model or "",
         "rp_llm_disabled": cfg.rp_llm_disabled,
         "instruct_llm_url": cfg.instruct_llm_url,
         "instruct_llm_backend": cfg.instruct_llm_backend,
-        "instruct_llm_model": cfg.instruct_model or "",
+        "instruct_llm_model": cfg.instruct_llm_model or "",
         "instruct_llm_disabled": cfg.instruct_llm_disabled,
         "thinking_steps": cfg.thinking_steps,
         "refinement_steps": cfg.refinement_steps,
@@ -279,6 +279,69 @@ async def dashboard_config():
         "db_dir": cfg.db_dir,
         "prompts_dir": cfg.prompts_dir,
     }
+
+
+# ── Extension Ping & Dashboard Status ────────────────────────
+
+# Timestamp of the last ping from the ST extension.
+# The dashboard polls /api/dashboard/status to show a live indicator.
+_last_extension_ping: float = 0.0
+
+
+@app.post("/api/ping")
+async def extension_ping():
+    """Heartbeat ping from the SillyTavern extension.
+
+    The extension sends this every 30 seconds as part of its health
+    check routine.  We record the timestamp so the dashboard can show
+    whether the extension is currently connected.
+    """
+    global _last_extension_ping
+    _last_extension_ping = time.time()
+    return {"status": "ok"}
+
+
+@app.get("/api/dashboard/status")
+async def dashboard_status():
+    """Return live status indicators for the dashboard header.
+
+    * extension_connected — True if the ST extension pinged recently
+      (within the last 45 seconds).
+    * debug_mode — current debug flag from config.
+    """
+    connected = (time.time() - _last_extension_ping) < 45
+    if not config_manager:
+        return {"extension_connected": False, "debug_mode": False}
+    return {
+        "extension_connected": connected,
+        "debug_mode": config_manager.config.debug_mode,
+    }
+
+
+# ── Delete Session Endpoint ──────────────────────────────────
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session and its database file.
+
+    Returns 404 if the session does not exist.
+    """
+    if not database:
+        raise HTTPException(503, "Database not initialized")
+
+    # Verify the session exists
+    meta = database.get_session(session_id)
+    if not meta:
+        raise HTTPException(404, "Session not found")
+
+    char_name = meta.get("character_name", "") or "Unnamed"
+    success = database.delete_session(session_id)
+
+    if not success:
+        raise HTTPException(500, "Failed to delete session")
+
+    logger.info(f"Deleted session {session_id} ({char_name})")
+    return {"status": "deleted", "session_id": session_id, "character_name": char_name}
 
 
 @app.get("/v1/models")
@@ -294,13 +357,13 @@ async def list_models():
 
     if not cfg.rp_llm_disabled:
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
         )
         models.extend(await rp_client.list_models())
 
     if not cfg.instruct_llm_disabled:
         instruct_client = client_manager.get_instruct_client(
-            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
         )
         models.extend(await instruct_client.list_models())
 
@@ -466,7 +529,7 @@ async def init_session(session_id: str, request: Request):
             try:
                 urls = config_manager.get_effective_urls()
                 instruct_client = client_manager.get_instruct_client(
-                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
                 )
                 pipeline = ExtractionPipeline(
                     database, instruct_client, str(config_manager.prompts_dir_path)
@@ -535,12 +598,12 @@ async def receive_config(request: Request):
         "rp": {
             "url": urls["rp_llm_url"],
             "template": cfg.rp_template,
-            "model": cfg.rp_model,
+            "model": cfg.rp_llm_model,
         },
         "instruct": {
             "url": urls["instruct_llm_url"],
             "template": cfg.instruct_template,
-            "model": cfg.instruct_model,
+            "model": cfg.instruct_llm_model,
         },
     })
 
@@ -699,7 +762,7 @@ async def chat_completions(request: Request):
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         rp_client = client_manager.get_rp_client(
-            urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+            urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
         )
         return StreamingResponse(
             _passthrough_stream(rp_client, clean_messages, body),
@@ -747,7 +810,7 @@ async def chat_completions(request: Request):
 
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
-        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_model
+        urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
     )
 
     world_summary = ""
@@ -783,7 +846,7 @@ async def chat_completions(request: Request):
 
     # ── Step 6: Thinking passes (optional) ────────────────────
     rp_client = client_manager.get_rp_client(
-        urls["rp_llm_url"], cfg.rp_template, cfg.rp_model
+        urls["rp_llm_url"], cfg.rp_template, cfg.rp_llm_model
     )
 
     thinking_notes = []
@@ -834,7 +897,7 @@ async def chat_completions(request: Request):
                 f"RP LLM target: {urls['rp_llm_url']} (disabled={cfg.rp_llm_disabled})\n"
                 f"Instruct LLM target: {urls['instruct_llm_url']} (disabled={cfg.instruct_llm_disabled})\n"
                 f"\nCheck the Pinokio terminal for full message logs.",
-                model=cfg.rp_model or "dry-run",
+                model=cfg.rp_llm_model or "dry-run",
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -845,7 +908,7 @@ async def chat_completions(request: Request):
         logger.info("[RP LLM DISABLED] Returning placeholder response")
         placeholder = "[RP LLM DISABLED] The RP LLM is turned off in config.ini. No narrative was generated."
         return StreamingResponse(
-            _dry_run_stream(placeholder, model=cfg.rp_model or "rp-disabled"),
+            _dry_run_stream(placeholder, model=cfg.rp_llm_model or "rp-disabled"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -882,7 +945,7 @@ async def chat_completions(request: Request):
                         "finish_reason": None,
                         "index": 0,
                     }],
-                    "model": cfg.rp_model or "agent-statesync",
+                    "model": cfg.rp_llm_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {payload}\n\n"
@@ -897,7 +960,7 @@ async def chat_completions(request: Request):
                         "finish_reason": "stop",
                         "index": 0,
                     }],
-                    "model": cfg.rp_model or "agent-statesync",
+                    "model": cfg.rp_llm_model or "agent-statesync",
                     "object": "chat.completion.chunk",
                 })
                 yield f"data: {finish}\n\n"
@@ -1090,10 +1153,19 @@ async def legacy_completions(request: Request):
 
 if __name__ == "__main__":
     cfg = ConfigManager()
+    _port = cfg.port
+
+    # Print a localhost URL BEFORE uvicorn starts.
+    # Pinokio's start.json uses regex /http://\S+/ to capture the first
+    # URL from stdout and sets it as the dashboard button link.
+    # uvicorn prints "http://0.0.0.0:PORT" which is not a valid browser
+    # URL. By printing localhost first, Pinokio captures our line instead.
+    print(f"http://localhost:{_port}")
+
     uvicorn.run(
         "server:app",
         host=cfg.host,
-        port=cfg.port,
+        port=_port,
         reload=False,
         log_level="debug" if cfg.config.debug_mode else "info",
         access_log=False,

@@ -125,9 +125,47 @@ class Database:
         """Initialize session with character card and persona data.
 
         Called by POST /api/sessions/{id}/init when the extension sends
-        character info on first load.
+        character info on first load.  For group chats the extension sends
+        ``group_name`` / ``group_members`` instead of the single-character
+        fields; we map those to ``character_name`` / ``character_description``
+        so the dashboard and other read-only consumers still work.
         """
-        self.create_session(session_id)
+        # For group chats, remap group keys to character keys
+        is_group = character_data.get("is_group", False)
+        if is_group:
+            group_name = character_data.get("group_name", "")
+            group_members = character_data.get("group_members", [])
+            # Store group metadata in the character fields
+            character_data = {
+                "character_name": group_name or "Group Chat",
+                "character_description": json.dumps(
+                    group_members, ensure_ascii=False
+                ) if group_members else "",
+                "character_personality": "",
+                "character_scenario": "",
+                "character_first_mes": "",
+                "character_mes_example": "",
+                "persona_name": character_data.get("persona_name", ""),
+                "persona_description": character_data.get("persona_description", ""),
+            }
+
+        # Ensure the session DB exists (no re-creation if already present).
+        # IMPORTANT: do NOT re-insert the session row here —
+        # create_session() already did that (with st_chat_id).
+        # INSERT OR IGNORE would silently skip anyway, but we avoid
+        # the redundant exec + log entirely.
+        try:
+            conn = self._get_conn(session_id)
+            has_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
+            ).fetchone()
+            if not has_table:
+                conn.executescript(_SESSION_SCHEMA)
+                conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
         conn = self._get_conn(session_id)
         try:
             conn.execute(
