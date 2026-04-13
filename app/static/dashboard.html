@@ -22,12 +22,13 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .badge-green { background: rgba(63,185,80,0.12); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
 .badge-red { background: rgba(248,81,73,0.12); color: var(--red); border: 1px solid rgba(248,81,73,0.25); }
 .badge-orange { background: rgba(210,153,34,0.12); color: var(--orange); border: 1px solid rgba(210,153,34,0.25); }
+.badge-purple { background: rgba(188,140,255,0.12); color: var(--purple); border: 1px solid rgba(188,140,255,0.25); }
 .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge-dot.pulse { animation: badge-pulse 2s ease-in-out infinite; }
 @keyframes badge-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 .refresh-info { font-size: 12px; color: var(--text-dim); }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
-.tab { padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent; transition: all 0.15s; }
+.tab { padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent; transition: all 0.15s; user-select: none; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
 .tab-content { display: none; }
@@ -101,6 +102,67 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 .modal-btn-danger { background: rgba(248,81,73,0.15); color: var(--red); border-color: rgba(248,81,73,0.3); }
 .modal-btn-danger:hover { background: rgba(248,81,73,0.25); }
 
+/* ── Debug Stepping Panel ────────────────────────────── */
+.debug-panel { }
+.debug-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.debug-controls .info { font-size: 12px; color: var(--text-dim); }
+.btn-debug-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid var(--border); transition: all 0.15s; }
+.btn-debug-toggle:hover { background: rgba(139,148,158,0.1); }
+.btn-debug-toggle.on { background: rgba(88,166,255,0.15); border-color: rgba(88,166,255,0.3); color: var(--accent); }
+.btn-debug-toggle.off { background: transparent; color: var(--text-dim); }
+.btn-debug-reset { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-dim); transition: all 0.15s; }
+.btn-debug-reset:hover { background: rgba(139,148,158,0.1); color: var(--text); }
+.btn-debug-reset:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.debug-waiting-banner { display: none; align-items: center; gap: 10px; padding: 10px 14px; background: rgba(210,153,34,0.08); border: 1px solid rgba(210,153,34,0.2); border-radius: 8px; margin-bottom: 12px; animation: debug-waiting-pulse 1.5s ease-in-out infinite; }
+.debug-waiting-banner.visible { display: flex; }
+@keyframes debug-waiting-pulse { 0%,100% { border-color: rgba(210,153,34,0.2); } 50% { border-color: rgba(210,153,34,0.5); } }
+.debug-waiting-icon { font-size: 16px; color: var(--orange); }
+.debug-waiting-text { font-size: 13px; color: var(--orange); font-weight: 500; }
+
+.debug-step-list { display: flex; flex-direction: column; gap: 0; }
+.debug-step { display: flex; gap: 10px; padding: 8px 0; font-size: 13px; border-bottom: 1px solid rgba(48,54,61,0.3); }
+.debug-step:last-child { border-bottom: none; }
+.debug-step.completed { opacity: 0.7; }
+.debug-step-icon { min-width: 20px; font-size: 13px; }
+.debug-step-icon.done { color: var(--green); }
+.debug-step-icon.waiting { color: var(--orange); animation: step-wait-pulse 1s ease-in-out infinite; }
+@keyframes step-wait-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.debug-step-body { flex: 1; }
+.debug-step-time { font-size: 11px; color: var(--text-dim); font-family: 'Consolas', monospace; }
+.debug-step-incoming { color: var(--cyan); font-weight: 500; font-size: 12px; }
+.debug-step-arrow { color: var(--text-dim); font-size: 12px; margin: 0 4px; }
+.debug-step-outgoing { color: var(--text-bright); font-weight: 500; font-size: 12px; }
+.debug-step-data { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+.debug-step-data code { background: rgba(110,118,129,0.15); padding: 1px 5px; border-radius: 4px; font-size: 11px; color: var(--cyan); }
+
+/* Collapsible debug data panels */
+.debug-collapse { margin-top: 6px; border: 1px solid rgba(48,54,61,0.5); border-radius: 6px; overflow: hidden; }
+.debug-collapse-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; font-size: 11px; font-weight: 500; user-select: none; transition: background 0.1s; }
+.debug-collapse-header:hover { background: rgba(88,166,255,0.06); }
+.debug-collapse-header.incoming { color: var(--cyan); background: rgba(57,210,192,0.06); }
+.debug-collapse-header.outgoing { color: var(--text-bright); background: rgba(88,166,255,0.06); }
+.debug-collapse-chevron { font-size: 10px; transition: transform 0.15s; color: var(--text-dim); }
+.debug-collapse.open .debug-collapse-chevron { transform: rotate(90deg); }
+.debug-collapse-body { display: none; padding: 8px 10px; font-size: 11px; font-family: 'Consolas', 'Monaco', monospace; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.15); border-top: 1px solid rgba(48,54,61,0.5); line-height: 1.6; }
+.debug-collapse.open .debug-collapse-body { display: block; }
+.debug-collapse-body .json-key { color: var(--purple); }
+.debug-collapse-body .json-str { color: var(--green); }
+.debug-collapse-body .json-num { color: var(--orange); }
+.debug-collapse-body .json-bool { color: var(--cyan); }
+.debug-collapse-body .json-null { color: var(--text-dim); font-style: italic; }
+
+.debug-continue-bar { display: none; align-items: center; justify-content: space-between; padding: 12px 0; }
+.debug-continue-bar.visible { display: flex; }
+.btn-debug-continue { display: inline-flex; align-items: center; gap: 6px; padding: 8px 20px; background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); border-radius: 6px; color: var(--green); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+.btn-debug-continue:hover { background: rgba(63,185,80,0.25); border-color: rgba(63,185,80,0.5); }
+.btn-debug-continue svg { width: 14px; height: 14px; }
+.debug-continue-hint { font-size: 11px; color: var(--text-dim); }
+
+.debug-empty { text-align: center; padding: 30px; color: var(--text-dim); font-size: 13px; }
+.debug-empty .icon { font-size: 28px; margin-bottom: 8px; opacity: 0.5; }
+.debug-no-data { font-size: 10px; color: var(--text-dim); font-style: italic; padding: 4px 10px; opacity: 0.6; }
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -109,6 +171,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   .db-grid { grid-template-columns: 1fr; }
   .config-grid { grid-template-columns: 1fr; }
   .run-meta { font-size: 12px; }
+  .debug-controls { flex-direction: column; align-items: stretch; }
 }
 </style>
 </head>
@@ -130,9 +193,13 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
           <span class="badge-dot"></span>
           <span id="instructLabel">Instruct: off</span>
         </span>
-        <span class="badge badge-orange" id="debugBadge" style="display:none;">
+        <span class="badge badge-red" id="debugBadge" style="display:none;">
           <span class="badge-dot"></span>
           DEBUG
+        </span>
+        <span class="badge badge-purple" id="steppingBadge" style="display:none;">
+          <span class="badge-dot pulse"></span>
+          STEPPING
         </span>
       </div>
       <span class="refresh-info">Refreshes every 3s</span>
@@ -142,6 +209,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
     <div class="tab active" data-tab="pipeline">Pipeline</div>
     <div class="tab" data-tab="database">Database</div>
     <div class="tab" data-tab="config">Config</div>
+    <div class="tab" data-tab="debug">Debug</div>
   </div>
   <div class="tab-content active" id="tab-pipeline">
     <div id="pipelineContainer"><div class="empty-state"><div class="icon">&#9881;</div>Waiting for pipeline data...</div></div>
@@ -166,6 +234,45 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   </div>
   <div class="tab-content" id="tab-config">
     <div class="config-grid" id="configContainer"><div class="empty-state"><div class="icon">&#9881;</div>Loading config...</div></div>
+  </div>
+  <div class="tab-content" id="tab-debug">
+    <div class="debug-panel">
+      <!-- Controls -->
+      <div class="debug-controls">
+        <button class="btn-debug-toggle off" id="btnDebugToggle" onclick="toggleDebugStepping()">
+          <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px;"><path d="M8 1a7 7 0 1 0 14A7 7 0 0 0 8 1zm0 12.3A5.3 5.3 0 0 1 2.7 8.3a5.3 5.3 0 0 1 0-6.6z"/></svg>
+          <span id="debugToggleLabel">Enable Stepping</span>
+        </button>
+        <button class="btn-debug-reset" id="btnDebugReset" onclick="resetDebug()" disabled>
+          Reset
+        </button>
+        <span class="info" id="debugInfo">Debug stepping is OFF. Enable it to pause the pipeline at each step and inspect incoming/outgoing data.</span>
+      </div>
+
+      <!-- Waiting Banner (shown when pipeline is paused) -->
+      <div class="debug-waiting-banner" id="debugWaitingBanner">
+        <span class="debug-waiting-icon">&#9203;</span>
+        <span class="debug-waiting-text">Pipeline is waiting for your input...</span>
+      </div>
+
+      <!-- Step list -->
+      <div id="debugStepList" class="debug-step-list">
+        <div class="debug-empty" id="debugEmpty">
+          <div class="icon">&#128270;</div>
+          No debug steps yet.<br>
+          <span style="font-size:12px;">Enable stepping and send a message to see steps here.</span>
+        </div>
+      </div>
+
+      <!-- Continue button -->
+      <div class="debug-continue-bar" id="debugContinueBar">
+        <span class="debug-continue-hint">Click Continue to advance the pipeline to the next step</span>
+        <button class="btn-debug-continue" id="btnDebugContinue" onclick="continueDebug()">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 1.75a.25.25 0 0 1 .25-.25h2.5a.25.25 0 0 1 .25.25V3h-3V1.75zM5 3V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75V3h3.5a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5H5V3zm-3 1.5v11h13v-11H2zM4.5 5a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-7z"/><path d="M12.1 4.3a.75.75 0 0 1 .02 1.06l-3.5 3.5H4.38l3.5-3.5A.75.75 0 0 1 8.88 4.3h2.12a.75.75 0 0 1 .02 1.06l-3.5 3.5H7.12l3.5-3.5A.75.75 0 0 1 8.88 4.3h3.12a.75.75 0 0 1 .02 1.06l-3.5 3.5h1.38l3.5-3.5a.75.75 0 0 1 .02-1.06l3.5-3.5H12.1z"/></svg>
+          Continue
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -213,8 +320,6 @@ function trunc(s, n) { return !s ? '' : s.length > n ? s.slice(0, n) + '...' : s
 // ── Health check ───────────────────────────────────────────
 async function checkHealth() {
   const d = await apiFetch('/health');
-  // Health endpoint always returns connected (it's the same server).
-  // Extension status is handled separately via /api/dashboard/status.
   return d && d.status === 'ok';
 }
 
@@ -227,6 +332,7 @@ async function updateStatusBadges() {
   const extDot = document.getElementById('extDot');
   const extLabel = document.getElementById('extLabel');
   const debugBadge = document.getElementById('debugBadge');
+  const steppingBadge = document.getElementById('steppingBadge');
 
   if (status.extension_connected) {
     extBadge.className = 'badge badge-green';
@@ -260,10 +366,24 @@ async function updateStatusBadges() {
     instructLabel.textContent = status.instruct_llm_disabled ? 'Instruct: disabled' : 'Instruct: off';
   }
 
+  // Debug mode badge
   if (status.debug_mode) {
     debugBadge.style.display = '';
   } else {
     debugBadge.style.display = 'none';
+  }
+
+  // Debug stepping badge (shows purple pulsing when active+waiting)
+  if (status.debug_stepping) {
+    steppingBadge.style.display = '';
+    steppingBadge.className = 'badge badge-purple';
+    if (status.debug_waiting) {
+      steppingBadge.querySelector('.badge-dot').classList.add('pulse');
+    } else {
+      steppingBadge.querySelector('.badge-dot').classList.remove('pulse');
+    }
+  } else {
+    steppingBadge.style.display = 'none';
   }
 }
 
@@ -292,11 +412,10 @@ function renderPipeline(data) {
       if (s.preview) ph = `<div class="step-preview ${s.name === 'rp_response' ? 'response-box' : ''}">${esc(s.preview)}</div>`;
       if (s.changes) ph = `<div class="step-preview">${Object.entries(s.changes).map(([k,v]) => `${esc(k)}: ${esc(String(v))}`).join('<br>')}</div>`;
       const icon = s.status === 'done' ? '&#10003;' : s.status === 'warn' ? '&#9888;' : '&#9679;';
-      return `<div class="step"><span class="step-num">${si+1}.</span><span class="step-icon">${icon}</span><div class="step-body"><div class="step-name">${esc(s.label)}</div>${dh ? `<div class="step-data">${dh}</div>` : ''}${ph}</div></div>`;
+      return `<div class="step"><span class="step-num">${si+1}.</span><span class="step-icon">${icon}</span><div class="step-body"><div class="step-name">${esc(s.label)}</div>${dh ? `<div class="step-data">${dh}</div>` : ''}${ph}</div></div></div>`;
     }).join('');
     const rp = run.response_preview || '';
     return `<div class="run-card ${isOpen ? 'open' : ''}" onclick="this.classList.toggle('open')"><div class="run-header"><div class="run-meta"><span class="chevron">&#9654;</span><span class="run-id">Run #${data.runs.length - i}</span><span class="run-badge ${bc}">${esc(run.status)}</span><span style="color:var(--text-dim)">session=<code>${esc(run.session_id)}</code> msg=<code>${run.message_id}</code> type=<code>${esc(run.type)}</code></span></div><div style="display:flex;align-items:center;gap:10px;">${run.duration_ms ? `<span class="run-time">${run.duration_ms}ms</span>` : ''}<span class="run-time">${esc(run.timestamp)}</span></div></div><div class="run-details">${stepsHtml}${rp ? `<div class="step" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;"><span class="step-icon" style="color:var(--accent)">&#8618;</span><div class="step-body"><div class="step-name" style="color:var(--accent)">Returned to SillyTavern</div><div class="step-preview response-box">${esc(rp)}</div></div></div>` : ''}</div></div>`;
-  }).join('');
 }
 
 // ── Session list rendering ──────────────────────────────────
@@ -373,7 +492,6 @@ async function doDeleteSession() {
     document.getElementById('detailTitle').textContent = 'World State';
     btnDel.style.display = 'none';
     resetDeleteBtn();
-    // Refresh session list immediately
     const sessions = await apiFetch('/api/dashboard/sessions');
     if (sessions) renderSessions(sessions);
   } else {
@@ -393,7 +511,7 @@ document.getElementById('deleteModal').addEventListener('click', function(e) {
 function renderConfig(data) {
   if (!data) return;
   const sections = [
-    { title: 'Agent', items: { Port: data.port, 'Debug Mode': data.debug_mode, 'Dry Run': data.dry_run } },
+    { title: 'Agent', items: { Port: data.port, 'Debug Mode': data.debug_mode, 'Debug Stepping': data.debug_stepping, 'Dry Run': data.dry_run } },
     { title: 'RP LLM', items: { URL: data.rp_llm_url, Backend: data.rp_llm_backend, Model: data.rp_llm_model || '(default)', Disabled: data.rp_llm_disabled } },
     { title: 'Instruct LLM', items: { URL: data.instruct_llm_url, Backend: data.instruct_llm_backend, Model: data.instruct_llm_model, Disabled: data.instruct_llm_disabled } },
     { title: 'Pipeline', items: { 'Thinking Steps': data.thinking_steps, 'Refinement Steps': data.refinement_steps, 'History Count': data.history_count, 'RP Template': data.rp_template } },
@@ -402,19 +520,178 @@ function renderConfig(data) {
   document.getElementById('configContainer').innerHTML = sections.map(s => `<div class="config-section"><div class="config-section-title">${s.title}</div>${Object.entries(s.items).map(([k,v]) => `<div class="config-row"><span class="config-key">${k}</span><span class="config-val">${esc(String(v))}</span></div>`).join('')}</div>`).join('');
 }
 
+// ── Debug stepping ────────────────────────────────────────
+
+async function fetchDebugState() {
+  const data = await apiFetch('/api/debug/state');
+  if (!data) return;
+  renderDebugState(data);
+}
+
+function renderDebugState(data) {
+  const empty = document.getElementById('debugEmpty');
+  const stepList = document.getElementById('debugStepList');
+  const waitingBanner = document.getElementById('debugWaitingBanner');
+  const continueBar = document.getElementById('debugContinueBar');
+  const toggleBtn = document.getElementById('btnDebugToggle');
+  const toggleLabel = document.getElementById('debugToggleLabel');
+  const resetBtn = document.getElementById('btnDebugReset');
+  const info = document.getElementById('debugInfo');
+
+  // Toggle button state
+  if (data.enabled) {
+    toggleBtn.classList.remove('off');
+    toggleBtn.classList.add('on');
+    toggleLabel.textContent = 'Stepping ON';
+    resetBtn.disabled = false;
+    info.textContent = 'Pipeline will pause at each step. Click Continue to advance.';
+  } else {
+    toggleBtn.classList.remove('on');
+    toggleBtn.classList.add('off');
+    toggleLabel.textContent = 'Enable Stepping';
+    resetBtn.disabled = true;
+    info.textContent = 'Debug stepping is OFF. Enable it to pause the pipeline at each step and inspect incoming/outgoing data.';
+  }
+
+  // Waiting banner
+  if (data.waiting) {
+    waitingBanner.classList.add('visible');
+  } else {
+    waitingBanner.classList.remove('visible');
+  }
+
+  // Continue bar
+  if (data.waiting) {
+    continueBar.classList.add('visible');
+  } else {
+    continueBar.classList.remove('visible');
+  }
+
+  // Step list
+  const completed = data.completed || [];
+  const current = data.current;
+  if (completed.length === 0 && !current) {
+    empty.style.display = '';
+    stepList.innerHTML = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+
+  let html = '';
+
+  // Build collapsible data panels for a step
+  function buildDataPanels(step) {
+    const data = step.data;
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      return '<div class="debug-no-data">(no data payload)</div>';
+    }
+    const jsonStr = JSON.stringify(data, null, 2);
+    const highlighted = syntaxHighlight(jsonStr);
+    return `
+      <div class="debug-collapse">
+        <div class="debug-collapse-header incoming" onclick="toggleDebugCollapse(this)">
+          <span class="debug-collapse-chevron">&#9654;</span>
+          Incoming Data
+        </div>
+        <div class="debug-collapse-body">${highlighted}</div>
+      </div>`;
+  }
+
+  // Completed steps
+  completed.forEach(step => {
+    html += `<div class="debug-step completed">
+      <span class="debug-step-icon done">&#10003;</span>
+      <div class="debug-step-body">
+        <div class="debug-step-time">${esc(step.timestamp)}</div>
+        <div class="debug-step-incoming">Incoming: ${esc(step.incoming)}</div>
+        <div class="debug-step-arrow">&rarr;</div>
+        <div class="debug-step-outgoing">Outgoing: ${esc(step.outgoing)}</div>
+        ${buildDataPanels(step)}
+      </div>
+    </div>`;
+  });
+
+  // Current waiting step
+  if (current) {
+    html += `<div class="debug-step">
+      <span class="debug-step-icon waiting">&#9679;</span>
+      <div class="debug-step-body">
+        <div class="debug-step-time">${esc(current.timestamp)}</div>
+        <div class="debug-step-incoming">Incoming: ${esc(current.incoming)}</div>
+        <div class="debug-step-arrow">&rarr;</div>
+        <div class="debug-step-outgoing">Outgoing: ${esc(current.outgoing)}</div>
+        ${buildDataPanels(current)}
+      </div>
+    </div>`;
+  }
+
+  stepList.innerHTML = html;
+}
+
+async function toggleDebugStepping() {
+  const newState = !document.getElementById('btnDebugToggle').classList.contains('on');
+  await apiFetch('/api/debug/toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: newState }),
+  });
+  // Immediately fetch to confirm state
+  await fetchDebugState();
+}
+
+async function continueDebug() {
+  const result = await apiFetch('/api/debug/continue', { method: 'POST' });
+  // Immediately fetch to show the step advancing
+  await fetchDebugState();
+}
+
+async function resetDebug() {
+  await apiFetch('/api/debug/reset', { method: 'POST' });
+  await fetchDebugState();
+}
+
+// ── Collapsible panel toggle ──────────────────────────────
+function toggleDebugCollapse(headerEl) {
+  const panel = headerEl.parentElement;
+  panel.classList.toggle('open');
+}
+
+// ── JSON syntax highlighting ──────────────────────────────
+function syntaxHighlight(json) {
+  return esc(json).replace(
+    /"([^\\"]+)"\s*:/g,
+    '<span class="json-key">"$1"</span>:'
+  ).replace(
+    /:\s*"([^"]*)"/g,
+    ': <span class="json-str">"$1"</span>'
+  ).replace(
+    /:\s*(\d+\.?\d*)/g,
+    ': <span class="json-num">$1</span>'
+  ).replace(
+    /:\s*(true|false)/g,
+    ': <span class="json-bool">$1</span>'
+  ).replace(
+    /:\s*(null)/g,
+    ': <span class="json-null">$1</span>'
+  );
+}
+
 // ── Refresh loop ───────────────────────────────────────────
 async function refresh() {
   if (!await checkHealth()) return;
-  const [pipeline, sessions, config, status] = await Promise.all([
+  const [pipeline, sessions, config, status, debugData] = await Promise.all([
     apiFetch('/api/dashboard/pipeline'),
     apiFetch('/api/dashboard/sessions'),
     apiFetch('/api/dashboard/config'),
     apiFetch('/api/dashboard/status'),
+    apiFetch('/api/debug/state'),
   ]);
   if (pipeline) renderPipeline(pipeline);
   if (sessions) renderSessions(sessions);
   if (config) renderConfig(config);
   if (status) updateStatusBadges();
+  if (debugData) renderDebugState(debugData);
 }
 refresh();
 refreshInterval = setInterval(refresh, 3000);

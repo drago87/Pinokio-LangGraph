@@ -14,6 +14,9 @@ Endpoints:
   GET  /health                — Health check
   GET  /api/sessions          — List sessions
   GET  /api/sessions/{id}     — Get session info/stats
+  GET  /api/debug/state       — Get debug stepping state
+  POST /api/debug/continue    — Resume paused debug pipeline
+  POST /api/debug/toggle      — Enable/disable debug stepping
 
 Main Pipeline (POST /v1/chat/completions):
   1. Parse [SYSTEM_META] from messages[0]
@@ -67,6 +70,13 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("agent-statesync")
+
+# Suppress httpx/httpcore noise at import time, BEFORE any probe runs.
+# _probe_llm() hits /v1/models every 3 seconds — the DEBUG-level wire
+# logs from httpcore.connection / httpcore.http11 / httpx would flood
+# the terminal.  _apply_debug_level() re-applies these on toggle.
+for _ln in ("httpx", "httpcore", "hpack", "anyio"):
+    logging.getLogger(_ln).setLevel(logging.WARNING)
 
 # ── Globals ───────────────────────────────────────────────────
 
@@ -138,13 +148,127 @@ class PipelineTracker:
 pipeline_tracker = PipelineTracker()
 
 
+# ── Debug Gate ──────────────────────────────────────────────
+# When debug stepping is enabled, the pipeline pauses at each
+# checkpoint and waits for the user to click "Continue" in the
+# dashboard.  Health checks, pings, and other non-pipeline
+# endpoints are NOT affected because asyncio.Event.wait() only
+# blocks the specific coroutine — the event loop keeps running.
+
+class DebugGate:
+    """Manages debug stepping for the pipeline.
+
+    When enabled, the pipeline pauses at each checkpoint and waits
+    for the user to click "Continue" in the dashboard.  Health checks,
+    pings, and other non-pipeline endpoints are NOT affected because
+    asyncio.Event.wait() only blocks the calling coroutine — the
+    event loop continues to serve other requests.
+
+    Only one pipeline can be debugged at a time.  If a second pipeline
+    starts while one is paused, the second skips all debug checkpoints.
+    """
+
+    def __init__(self):
+        self.enabled: bool = False
+        self._event: asyncio.Event = asyncio.Event()
+        self._event.set()  # Start unblocked
+        self._current: Optional[Dict[str, Any]] = None
+        self._completed: List[Dict[str, Any]] = []
+        self._active: bool = False  # True while a pipeline is being debugged
+        self._lock: asyncio.Lock = asyncio.Lock()
+
+    async def wait(self, incoming: str, outgoing: str, data: dict = None):
+        """Pause the pipeline at a debug checkpoint.
+
+        Records the incoming/outgoing labels and waits for the user
+        to click "Continue" in the dashboard.  If debug stepping is
+        disabled, or another pipeline is already being debugged,
+        this returns immediately.
+        """
+        if not self.enabled:
+            return
+
+        async with self._lock:
+            if self._active:
+                return  # Another pipeline already holds the debug gate
+            self._active = True
+
+        step = {
+            "incoming": incoming,
+            "outgoing": outgoing,
+            "data": data or {},
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        }
+
+        self._current = step
+        self._event.clear()  # Block
+
+        logger.info(
+            f"[DEBUG GATE] PAUSED — "
+            f"Incoming: {incoming}  |  Outgoing: {outgoing}"
+        )
+
+        try:
+            await self._event.wait()
+        finally:
+            self._completed.append(step)
+            self._current = None
+            self._active = False
+
+        logger.info(f"[DEBUG GATE] RESUMED — proceeding with: {outgoing}")
+
+    def continue_pipeline(self):
+        """Signal the waiting pipeline to proceed."""
+        if self._current is not None:
+            logger.info("[DEBUG GATE] User clicked Continue")
+        self._event.set()
+
+    def reset(self):
+        """Clear all debug state (completed steps, current step)."""
+        self._completed.clear()
+        self._current = None
+        self._active = False
+        self._event.set()
+
+    def toggle(self, enabled: bool):
+        """Enable or disable debug stepping."""
+        self.enabled = enabled
+        if not enabled:
+            self.reset()
+        state = "ON" if enabled else "OFF"
+        logger.info(f"[DEBUG GATE] Debug stepping: {state}")
+
+    def to_dict(self) -> dict:
+        """Return debug state for the dashboard."""
+        return {
+            "enabled": self.enabled,
+            "active": self._active,
+            "waiting": self._current is not None,
+            "current": self._current,
+            "completed": list(self._completed),
+        }
+
+
+debug_gate = DebugGate()
+
+
 def _apply_debug_level(debug: bool):
-    """Flip the root logger between INFO and DEBUG."""
+    """Flip the root logger between INFO and DEBUG.
+
+    When debug_mode is ON, the agent-statesync logger gets DEBUG so you
+    see full message payloads, parsed meta, DB ops, extraction results, etc.
+    However, httpx/httpcore are kept at WARNING even in debug mode —
+    their per-request wire logs are pure noise (especially since _probe_llm
+    runs every few seconds for the status indicators).
+    """
     target = logging.DEBUG if debug else logging.INFO
     logging.getLogger().setLevel(target)
-    # Also flip our own logger and any child loggers (httpx, etc.)
-    for name in ("agent-statesync", "httpx", "httpcore", "asyncio"):
+    # Our app logger + langgraph internals get full debug
+    for name in ("agent-statesync", "langgraph", "asyncio"):
         logging.getLogger(name).setLevel(target)
+    # Keep httpx/httpcore at WARNING to avoid probe spam
+    for name in ("httpx", "httpcore", "hpack", "anyio"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     level_name = "DEBUG" if debug else "INFO"
     logger.info(f"Log level set to {level_name}")
 
@@ -163,17 +287,23 @@ async def lifespan(app: FastAPI):
     # Apply debug mode from config.ini (extension can change it later)
     _apply_debug_level(config_manager.config.debug_mode)
 
+    # Apply debug stepping from config.ini
+    debug_stepping = getattr(config_manager.config, 'debug_stepping', False)
+    if debug_stepping:
+        debug_gate.toggle(True)
+
     logger.info("=" * 56)
     logger.info("  Agent-StateSync starting...")
-    logger.info(f"  Port:           {config_manager.port}")
-    logger.info(f"  RP LLM:         {config_manager.config.rp_llm_url}")
-    logger.info(f"  RP disabled:    {config_manager.config.rp_llm_disabled}")
-    logger.info(f"  Instruct LLM:   {config_manager.config.instruct_llm_url}")
-    logger.info(f"  Instruct dis.:  {config_manager.config.instruct_llm_disabled}")
-    logger.info(f"  Debug mode:     {config_manager.config.debug_mode}")
-    logger.info(f"  Dry run:        {config_manager.config.dry_run}")
-    logger.info(f"  DB directory:   {config_manager.db_dir_path}")
-    logger.info(f"  Prompts dir:    {config_manager.prompts_dir_path}")
+    logger.info(f"  Port:            {config_manager.port}")
+    logger.info(f"  RP LLM:          {config_manager.config.rp_llm_url}")
+    logger.info(f"  RP disabled:     {config_manager.config.rp_llm_disabled}")
+    logger.info(f"  Instruct LLM:     {config_manager.config.instruct_llm_url}")
+    logger.info(f"  Instruct dis.:    {config_manager.config.instruct_llm_disabled}")
+    logger.info(f"  Debug mode:      {config_manager.config.debug_mode}")
+    logger.info(f"  Debug stepping:  {debug_stepping}")
+    logger.info(f"  Dry run:         {config_manager.config.dry_run}")
+    logger.info(f"  DB directory:    {config_manager.db_dir_path}")
+    logger.info(f"  Prompts dir:     {config_manager.prompts_dir_path}")
     logger.info("=" * 56)
 
     yield
@@ -210,6 +340,7 @@ async def health():
         "version": "2.0.0",
         "sessions": len(database.list_sessions()) if database else 0,
         "debug_mode": cfg.debug_mode if cfg else False,
+        "debug_stepping": debug_gate.enabled,
         "dry_run": cfg.dry_run if cfg else False,
         "rp_llm_disabled": cfg.rp_llm_disabled if cfg else False,
         "instruct_llm_disabled": cfg.instruct_llm_disabled if cfg else False,
@@ -263,6 +394,7 @@ async def dashboard_config():
     return {
         "port": cfg.port,
         "debug_mode": cfg.debug_mode,
+        "debug_stepping": debug_gate.enabled,
         "dry_run": cfg.dry_run,
         "rp_llm_url": cfg.rp_llm_url,
         "rp_llm_backend": cfg.rp_llm_backend,
@@ -308,6 +440,8 @@ async def dashboard_status():
     * extension_connected — True if the ST extension pinged recently
       (within the last 45 seconds).
     * debug_mode — current debug flag from config.
+    * debug_stepping — True if debug gate stepping is active.
+    * debug_waiting — True if a pipeline is currently paused at a debug checkpoint.
     * rp_llm_connected — True if the RP LLM backend responds to /v1/models.
     * instruct_llm_connected — True if the Instruct LLM backend responds to /v1/models.
     """
@@ -316,6 +450,8 @@ async def dashboard_status():
         return {
             "extension_connected": False,
             "debug_mode": False,
+            "debug_stepping": False,
+            "debug_waiting": False,
             "rp_llm_connected": False,
             "rp_llm_disabled": False,
             "instruct_llm_connected": False,
@@ -338,6 +474,8 @@ async def dashboard_status():
     return {
         "extension_connected": connected,
         "debug_mode": cfg.debug_mode,
+        "debug_stepping": debug_gate.enabled,
+        "debug_waiting": debug_gate._current is not None,
         "rp_llm_connected": rp_connected,
         "rp_llm_disabled": cfg.rp_llm_disabled,
         "instruct_llm_connected": instruct_connected,
@@ -363,6 +501,70 @@ async def _probe_llm(base_url: str, timeout_s: float = 3.0) -> bool:
             return resp.status_code == 200
     except Exception:
         return False
+
+
+# ── Debug Stepping Endpoints ────────────────────────────────
+
+@app.get("/api/debug/state")
+async def debug_state():
+    """Return the current debug stepping state for the dashboard."""
+    return debug_gate.to_dict()
+
+
+@app.post("/api/debug/continue")
+async def debug_continue():
+    """Resume a paused debug pipeline.
+
+    Called when the user clicks "Continue" in the dashboard's
+    debug panel.  If no pipeline is currently paused, this is a no-op.
+    """
+    if debug_gate._current is None:
+        return {"status": "idle", "message": "No pipeline is currently paused"}
+    debug_gate.continue_pipeline()
+    step = debug_gate._completed[-1] if debug_gate._completed else None
+    return {
+        "status": "continued",
+        "message": f"Proceeding with: {step['outgoing']}" if step else "Continued",
+    }
+
+
+@app.post("/api/debug/toggle")
+async def debug_toggle(request: Request):
+    """Enable or disable debug stepping.
+
+    Body: {"enabled": true/false}
+
+    When disabled, any currently paused pipeline is immediately
+    resumed so it doesn't hang.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+
+    enabled = bool(body.get("enabled", False))
+    debug_gate.toggle(enabled)
+
+    # Persist to config.ini
+    if config_manager:
+        config_manager.config.debug_stepping = enabled
+        config_manager.save()
+
+    return {
+        "status": "ok",
+        "debug_stepping": debug_gate.enabled,
+    }
+
+
+@app.post("/api/debug/reset")
+async def debug_reset():
+    """Reset the debug gate (clear completed steps, unblock if waiting)."""
+    had_current = debug_gate._current is not None
+    debug_gate.reset()
+    return {
+        "status": "ok",
+        "message": "Debug state reset" + (" (resumed paused pipeline)" if had_current else ""),
+    }
 
 
 # ── Delete Session Endpoint ──────────────────────────────────
@@ -441,6 +643,12 @@ async def create_session(request: Request):
     except Exception:
         pass
 
+    await debug_gate.wait(
+        "Request to create session",
+        "Creating session in database",
+        {"st_chat_id": st_chat_id or "none"},
+    )
+
     session_id = str(uuid.uuid4())
     success = database.create_session(session_id, st_chat_id=st_chat_id)
 
@@ -448,6 +656,13 @@ async def create_session(request: Request):
         raise HTTPException(500, "Failed to create session")
 
     logger.info(f"Session created: {session_id} (st_chat_id={st_chat_id or 'none'})")
+
+    await debug_gate.wait(
+        f"Session created: {session_id[:8]}",
+        "Returning session_id to ST Extension",
+        {"session_id": session_id},
+    )
+
     return {"session_id": session_id, "st_chat_id": st_chat_id}
 
 
@@ -557,35 +772,91 @@ async def init_session(session_id: str, request: Request):
     if not body:
         raise HTTPException(400, "Empty request body")
 
-    logger.info(f"Initializing session {session_id} with character data...")
+    # --- Group detection ---
+    is_group = body.get("is_group", False)
+    group_name = body.get("group_name", "")
+    group_members = body.get("group_members", [])
+    group_disabled = body.get("group_disabled_members", [])
+    char_name = body.get("character_name", "Unknown")
+
+    # For group chats, use group_name as the display name
+    display_name = group_name if (is_group and group_name) else char_name
+
+    logger.info(f"Initializing session {session_id}: {display_name} (is_group={is_group}, members={len(group_members) if group_members else 0})")
     logger.debug(f"  Character data keys: {list(body.keys())}")
     success = database.init_session(session_id, body)
 
     if not success:
         raise HTTPException(500, "Failed to initialize session")
 
+    await debug_gate.wait(
+        f"Data received for: {display_name}",
+        "Session initialized in database",
+        {
+            "is_group": is_group,
+            "name": display_name,
+            "member_count": len(group_members) if group_members else 0,
+        },
+    )
+
     cfg = config_manager.config
 
     # Skip initial extraction if dry_run or instruct disabled
     if cfg.dry_run or cfg.instruct_llm_disabled:
-        logger.info(
-            f"[DRY RUN / INSTRUCT DISABLED] Skipping initial state extraction"
+        reason = "DRY RUN" if cfg.dry_run else "INSTRUCT LLM DISABLED"
+        logger.info(f"[{reason}] Skipping initial state extraction")
+        await debug_gate.wait(
+            f"Session initialized ({reason})",
+            "Skipping extraction — returning to ST Extension",
+            {"reason": reason},
         )
     else:
+        # Build extraction data outside the async function
+        urls = config_manager.get_effective_urls()
+        instruct_client = client_manager.get_instruct_client(
+            urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
+        )
+        pipeline = ExtractionPipeline(
+            database, instruct_client, str(config_manager.prompts_dir_path)
+        )
+
+        desc = body.get("character_description", "")
+        scenario = body.get("character_scenario", "")
+        first_mes = body.get("character_first_mes", "")
+        combined = f"Character: {display_name}\n{desc}\n{scenario}\n{first_mes}"
+
+        # Build extraction params
+        extract_params = {
+            "character_name": display_name,
+            "tracked_characters": group_members if (is_group and group_members) else [],
+            "mode": body.get("mode", "character"),
+            "is_initial": True,
+        }
+
         async def _extract_initial_state():
+            """Run initial state extraction with debug checkpoints.
+
+            For group chats: runs extraction ONCE with all members listed,
+            so the Instruct LLM can extract state for each character.
+            """
             try:
-                urls = config_manager.get_effective_urls()
-                instruct_client = client_manager.get_instruct_client(
-                    urls["instruct_llm_url"], cfg.instruct_template, cfg.instruct_llm_model
-                )
-                pipeline = ExtractionPipeline(
-                    database, instruct_client, str(config_manager.prompts_dir_path)
+                await debug_gate.wait(
+                    "Session ready for extraction",
+                    "Sending character data to Instruct LLM",
+                    {
+                        "character": display_name,
+                        "is_group": is_group,
+                        "members": extract_params["tracked_characters"],
+                        "data_length": len(combined),
+                        "instruct_url": urls["instruct_llm_url"],
+                    },
                 )
 
-                desc = body.get("character_description", "")
-                scenario = body.get("character_scenario", "")
-                first_mes = body.get("character_first_mes", "")
-                combined = f"Character: {body.get('character_name', '')}\n{desc}\n{scenario}\n{first_mes}"
+                logger.info(f"[INIT EXTRACT] Starting initial state extraction for session {session_id[:8]}...")
+                logger.info(f"[INIT EXTRACT] Instruct LLM URL: {urls['instruct_llm_url']}")
+                logger.info(f"[INIT EXTRACT] Instruct model: {cfg.instruct_llm_model or '(default)'}")
+                if is_group:
+                    logger.info(f"[INIT EXTRACT] GROUP MODE: {display_name} — members: {extract_params['tracked_characters']}")
 
                 result = await pipeline.run(
                     session_id=session_id,
@@ -593,18 +864,45 @@ async def init_session(session_id: str, request: Request):
                     swipe_index=0,
                     assistant_response=combined,
                     conversation_context="Initial character data extraction",
+                    **extract_params,
                 )
+
+                await debug_gate.wait(
+                    "Instruct LLM response received",
+                    "Writing state changes to database",
+                    {
+                        "success": result.get("success", False),
+                        "changes": result.get("changes_applied", 0),
+                        "raw_response_length": len(result.get("raw_response", "")),
+                    },
+                )
+
                 logger.info(
-                    f"Initial state extraction: "
+                    f"[INIT EXTRACT] Done: "
                     f"{'success' if result.get('success') else 'failed'}, "
-                    f"{result.get('changes_applied', 0)} fields"
+                    f"{result.get('changes_applied', 0)} fields, "
+                    f"raw_response length: {len(result.get('raw_response', ''))} chars"
+                )
+
+                await debug_gate.wait(
+                    "Database write complete",
+                    "Reporting success to ST Extension",
+                    {
+                        "fields_written": result.get("changes_applied", 0),
+                        "session_id": session_id[:8],
+                    },
                 )
             except Exception as e:
-                logger.error(f"Background initial extraction failed: {e}")
+                logger.error(f"[INIT EXTRACT] Initial extraction failed: {e}", exc_info=True)
 
-        task = asyncio.create_task(_extract_initial_state())
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        if debug_gate.enabled:
+            # Run inline so debug gate can pause each step
+            await _extract_initial_state()
+        else:
+            # Run as background task (normal mode)
+            task = asyncio.create_task(_extract_initial_state())
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
     return {
         "session_id": session_id,
@@ -838,6 +1136,13 @@ async def chat_completions(request: Request):
     if cfg.dry_run:
         _log_dry_run_receive(body, meta, clean_messages)
 
+    # ── Debug: pause after receiving request ────────────────
+    await debug_gate.wait(
+        "Chat request from SillyTavern",
+        f"Parse [SYSTEM_META] — type={meta.type}, msg={meta.message_id}, swipe={meta.swipe_index}",
+        {"session_id": meta.session_id[:8], "messages": len(clean_messages), "type": meta.type},
+    )
+
     # ── Step 2: Handle swipe/redo ─────────────────────────────
     if meta.type == "swipe":
         reverted = database.revert_swipe(
@@ -854,6 +1159,13 @@ async def chat_completions(request: Request):
         if reverted:
             logger.info(f"Reverted {reverted} state fields for redo")
         pipeline_tracker.step("redo", "Redo Handling", data={"reverted": reverted or 0}, status="warn" if reverted else "done")
+
+    # ── Debug: pause after swipe/redo ──────────────────────
+    await debug_gate.wait(
+        f"Message type: {meta.type} (reverted {reverted or 0} fields)" if meta.type in ("swipe", "redo") else f"Message type: {meta.type}",
+        "Translate world state via Instruct LLM" if not (cfg.dry_run or cfg.instruct_llm_disabled) else "Skip world state translation",
+        {"type": meta.type, "reverted": reverted or 0},
+    )
 
     # ── Step 3: Translate world state ─────────────────────────
     instruct_client = client_manager.get_instruct_client(
@@ -890,6 +1202,18 @@ async def chat_completions(request: Request):
     # ── Step 5: Format with template ───────────────────────────
     formatted_messages = format_messages(clean_messages, cfg.rp_template)
     pipeline_tracker.step("template", "Template Formatting", data={"template": cfg.rp_template, "messages": len(formatted_messages)})
+
+    # ── Debug: pause before RP LLM generation ───────────────
+    await debug_gate.wait(
+        f"World state translated ({len(world_summary)} chars), messages formatted ({cfg.rp_template})",
+        "Send to RP LLM for narrative generation",
+        {
+            "world_state_length": len(world_summary),
+            "template": cfg.rp_template,
+            "formatted_messages": len(formatted_messages),
+            "thinking_steps": cfg.thinking_steps,
+        },
+    )
 
     # ── Step 6: Thinking passes (optional) ────────────────────
     rp_client = client_manager.get_rp_client(
@@ -1018,6 +1342,13 @@ async def chat_completions(request: Request):
             rp_elapsed = int((time.time() - rp_start_time) * 1000)
             pipeline_tracker.step("rp_response", "RP LLM Response", data={"chars": len(response_text), "duration_ms": rp_elapsed}, preview=response_text[:300])
 
+            # ── Debug: pause after RP LLM response ──────────
+            await debug_gate.wait(
+                f"RP LLM response complete ({len(response_text)} chars, {rp_elapsed}ms)",
+                "Send conversation to Instruct LLM for state extraction",
+                {"response_length": len(response_text), "duration_ms": rp_elapsed},
+            )
+
             # ── Step 8: Refinement (optional, blocking) ──────────
             if cfg.refinement_steps > 0 and response_text:
                 logger.info(f"Running {cfg.refinement_steps} refinement pass(es)...")
@@ -1045,7 +1376,7 @@ async def chat_completions(request: Request):
                 "assistant", response_text,
             )
 
-            # ── Step 9: Background state extraction ────────────
+            # ── Step 9: State extraction ────────────────────────
             if cfg.instruct_llm_disabled:
                 logger.info("[INSTRUCT LLM DISABLED] Skipping state extraction")
                 pipeline_tracker.step("extraction", "State Extraction", status="warn", preview="Instruct LLM disabled — skipped")
@@ -1061,13 +1392,30 @@ async def chat_completions(request: Request):
 
                 async def _extract_state():
                     try:
-                        result = await extraction_pipe.run(
-                            session_id=meta.session_id,
-                            message_id=meta.message_id,
-                            swipe_index=meta.swipe_index,
-                            assistant_response=response_text,
-                            conversation_context=conv_context,
-                        )
+                        # Build extraction params with character/group info from META tag
+                        extract_params = {
+                            "session_id": meta.session_id,
+                            "message_id": meta.message_id,
+                            "swipe_index": meta.swipe_index,
+                            "assistant_response": response_text,
+                            "conversation_context": conv_context,
+                            "mode": "character",
+                            "is_initial": False,
+                        }
+
+                        # Pass group metadata if available (from [SYSTEM_META] tag)
+                        if meta.members:
+                            extract_params["tracked_characters"] = meta.members
+                            extract_params["character_name"] = meta.members[0] if len(meta.members) == 1 else (meta.group_name or "")
+                        else:
+                            # Single character: get name from session metadata
+                            session_meta = database.get_session(meta.session_id)
+                            if session_meta:
+                                extract_params["character_name"] = session_meta.get("character_name", "")
+
+                        logger.debug(f"[EXTRACT] Params: char={extract_params.get('character_name', '')}, tracked={extract_params.get('tracked_characters', [])}")
+
+                        result = await extraction_pipe.run(**extract_params)
 
                         # Track extraction result for dashboard
                         if result.get("success"):
@@ -1090,9 +1438,13 @@ async def chat_completions(request: Request):
                         logger.error(f"Background state extraction error: {e}")
                         pipeline_tracker.step("extraction", "State Extraction", status="warn", preview=f"Failed: {e}")
 
-                task = asyncio.create_task(_extract_state())
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
+                if debug_gate.enabled:
+                    # Run inline so debug gate can pause it
+                    await _extract_state()
+                else:
+                    task = asyncio.create_task(_extract_state())
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
 
             pipeline_tracker.finish("completed", response_text)
 

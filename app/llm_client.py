@@ -40,6 +40,20 @@ class LLMClient:
         self.model = model
         self.timeout = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
 
+    async def _resolve_model(self) -> str:
+        """Return the model name, auto-detecting from /v1/models if empty."""
+        if self.model:
+            return self.model
+        if not hasattr(self, '_cached_auto_model'):
+            models = await self.list_models()
+            if models:
+                self._cached_auto_model = models[0]
+                logger.info(f"Auto-detected model: {self._cached_auto_model}")
+            else:
+                self._cached_auto_model = ""
+                logger.warning("No model set and could not auto-detect from /v1/models")
+        return self._cached_auto_model
+
     async def _build_payload(
         self,
         messages: List[Dict[str, str]],
@@ -55,8 +69,9 @@ class LLMClient:
             "max_tokens": max_tokens,
             "stream": stream,
         }
-        if self.model:
-            payload["model"] = self.model
+        model = await self._resolve_model()
+        if model:
+            payload["model"] = model
         if stop:
             payload["stop"] = stop
         return payload

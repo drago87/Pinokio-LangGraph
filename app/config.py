@@ -68,6 +68,7 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
     "debug": {
         "debug_mode": "false",
         "dry_run": "false",
+        "debug_stepping": "false",
     },
     "prompts": {
         "rp_prompt_file": "default.yaml",
@@ -125,6 +126,7 @@ class AgentConfig:
         # Debug
         self.debug_mode: bool = False
         self.dry_run: bool = False
+        self.debug_stepping: bool = False
 
         # Prompt files
         self.rp_prompt_file: str = DEFAULTS["prompts"]["rp_prompt_file"]
@@ -210,6 +212,7 @@ class ConfigManager:
         # Debug
         self.config.debug_mode = getbool("debug", "debug_mode")
         self.config.dry_run = getbool("debug", "dry_run")
+        self.config.debug_stepping = getbool("debug", "debug_stepping")
 
         # Prompt files (optional section)
         self.config.rp_prompt_file = get("prompts", "rp_prompt_file", self.config.rp_prompt_file)
@@ -270,6 +273,7 @@ class ConfigManager:
         parser["debug"] = {
             "debug_mode": str(self.config.debug_mode).lower(),
             "dry_run": str(self.config.dry_run).lower(),
+            "debug_stepping": str(self.config.debug_stepping).lower(),
         }
 
         parser["prompts"] = {

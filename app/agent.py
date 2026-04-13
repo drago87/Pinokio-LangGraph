@@ -20,7 +20,6 @@ so they don't block the SSE stream to SillyTavern.
 
 import json
 import logging
-from pathlib import Path
 from typing import TypedDict, Optional, Dict, Any, List, Callable
 from datetime import datetime
 
@@ -41,6 +40,12 @@ class ExtractionState(TypedDict):
     swipe_index: int
     assistant_response: str
     conversation_context: str
+    # Group / multi-character tracking
+    character_name: str
+    tracked_characters: List[str]
+    mode: str  # "character" or "scenario"
+    is_initial: bool
+    # Pipeline state
     world_state: Dict[str, Any]
     formatted_messages: List[Dict[str, str]]
     raw_response: str
@@ -48,13 +53,6 @@ class ExtractionState(TypedDict):
     success: bool
     error: Optional[str]
     changes_applied: int
-    # New fields for mode-aware extraction
-    mode: str                    # "character" or "scenario"
-    character_name: str          # Active character name (from extension)
-    persona_name: str            # User persona name
-    tracked_characters: List[str]  # Characters to track (for multi-char cards)
-    character_description: str   # Character card description (for initial extraction)
-    is_initial: bool             # Whether this is an initial card extraction vs ongoing
 
 
 class TranslationState(TypedDict):
@@ -147,126 +145,89 @@ class ExtractionPipeline:
 
         return workflow.compile()
 
-    def _select_prompt_file(self, mode: str) -> str:
-        """Select the extraction prompt based on session mode.
-
-        Priority:
-          1. {prompts_dir}/instruct/extract_{mode}.yaml  (mode-specific)
-          2. {prompts_dir}/instruct/default.yaml          (fallback)
-          3. hardcoded default                          (last resort)
-        """
-        # Try mode-specific prompt first
-        mode_path = f"{self.prompts_dir}/instruct/extract_{mode}.yaml"
-        if Path(mode_path).exists():
-            logger.info(f"Using mode-specific extraction prompt: extract_{mode}.yaml")
-            return load_prompt_file(mode_path, self._default_instruct_prompt())
-
-        # Fallback to default
-        logger.info(f"No extract_{mode}.yaml found, falling back to default.yaml")
-        return load_prompt_file(
-            f"{self.prompts_dir}/instruct/default.yaml",
-            self._default_instruct_prompt(),
-        )
-
     def _format_prompt(self, state: ExtractionState) -> dict:
         """Build the extraction prompt for the Instruct LLM.
 
-        Selects the correct prompt based on mode (character/scenario),
-        injects current world state, and includes character context
-        for multi-character and initial extractions.
+        Includes character name, tracked characters list, extraction mode,
+        and whether this is an initial extraction (from character card)
+        vs. a conversation-based extraction.
         """
         # Load current world state from DB
         world_state = self.db.get_world_state(state["session_id"])
         state["world_state"] = world_state
 
-        mode = state.get("mode", "character") or "character"
-
-        # Load mode-appropriate prompt
-        system_prompt = self._select_prompt_file(mode)
+        # Load custom prompt if available
+        system_prompt = load_prompt_file(
+            f"{self.prompts_dir}/instruct/default.yaml",
+            self._default_instruct_prompt(),
+        )
 
         # Inject current world state into the prompt
         state_json = json.dumps(world_state, indent=2, ensure_ascii=False) if world_state else "{}"
 
-        # Build character context header
-        char_context = ""
+        # Build mode / character context section
         character_name = state.get("character_name", "")
-        persona_name = state.get("persona_name", "")
-        tracked = state.get("tracked_characters", [])
+        tracked_chars = state.get("tracked_characters", []) or []
+        mode = state.get("mode", "character")
         is_initial = state.get("is_initial", False)
 
-        if mode == "scenario":
-            char_context = "\nMODE: Scenario extraction. Track world-building, factions, plot, and characters dynamically."
-        else:
-            if tracked and len(tracked) > 1:
-                char_context = f"\nMODE: Multi-character extraction. Track these characters: {', '.join(tracked)}"
-            elif character_name:
-                char_context = f"\nMODE: Single-character extraction. Primary character: {character_name}"
+        # Load persona name from session metadata for context
+        session_meta = self.db.get_session(state["session_id"])
+        persona_name = ""
+        if session_meta:
+            persona_name = session_meta.get("persona_name", "") or ""
 
-        if persona_name:
-            char_context += f"\nPlayer persona: {persona_name}"
+        # Build the mode context that goes after the system prompt
+        mode_section = ""
+        if tracked_chars and len(tracked_chars) > 1:
+            mode_section = f"\nMODE: Multi-character extraction. Tracked characters: {', '.join(tracked_chars)}\n"
+            mode_section += f"Player persona: {persona_name}\n"
+        elif character_name:
+            mode_section = f"\nMODE: Single-character extraction. Primary character: {character_name}\n"
+            mode_section += f"Player persona: {persona_name}\n"
 
         if is_initial:
-            char_context += "\nThis is an INITIAL extraction from the character/scenario card. Extract as much relevant state as possible."
-
-        # Build the system message with world state injected
-        system_content = f"{system_prompt}{char_context}\n\nCurrent world state:\n```json\n{state_json}\n```"
-
-        # Build the user message
-        if is_initial:
-            # For initial extraction, the assistant_response contains card data
-            char_desc = state.get("character_description", "")
-            user_content = (
-                f"This is an initial extraction from a character or scenario card. "
-                f"Extract the starting world state from the following card data.\n\n"
-                f"--- Card Data ---\n{state['assistant_response']}\n"
-                f"--- End Card Data ---\n\n"
-                f"{state.get('conversation_context', '')}"
-            )
+            mode_section += "This is an INITIAL extraction from the character/scenario card. Extract as much relevant state as possible.\n"
         else:
-            user_content = (
-                f"Analyze the following narrative response and extract world state changes.\n\n"
-                f"--- Narrative Response ---\n{state['assistant_response']}\n"
-                f"--- End Response ---\n\n"
-                f"{state.get('conversation_context', '')}"
-            )
+            mode_section += "This is a CONVERSATION response. Only extract what CHANGED.\n"
 
         messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
+            {
+                "role": "system",
+                "content": (
+                    f"{system_prompt}{mode_section}\n\n"
+                    f"Current world state:\n```json\n{state_json}\n```"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Analyze the following narrative response and extract world state changes.\n\n"
+                    f"--- Narrative Response ---\n{state['assistant_response']}\n"
+                    f"--- End Response ---\n\n"
+                    f"{state.get('conversation_context', '')}"
+                ),
+            },
         ]
 
         state["formatted_messages"] = messages
         return state
 
-    def _extract_state(self, state: ExtractionState) -> dict:
-        """Call the Instruct LLM to extract state changes."""
-        import asyncio
+    async def _extract_state(self, state: ExtractionState) -> dict:
+        """Call the Instruct LLM to extract state changes.
+
+        This is an async node so it can directly await the LLM call
+        without the fragile get_event_loop / ThreadPoolExecutor workaround.
+        """
 
         messages = state.get("formatted_messages", [])
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're already in an async context — use create_task
-                # This node is called from async code, so we need a workaround
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    raw = pool.submit(
-                        asyncio.run,
-                        self.instruct_client.chat_complete(
-                            messages=messages,
-                            temperature=0.1,
-                            max_tokens=2048,
-                        ),
-                    ).result(timeout=120)
-            else:
-                raw = asyncio.run(
-                    self.instruct_client.chat_complete(
-                        messages=messages,
-                        temperature=0.1,
-                        max_tokens=2048,
-                    )
-                )
+            raw = await self.instruct_client.chat_complete(
+                messages=messages,
+                temperature=0.1,
+                max_tokens=2048,
+            )
 
             state["raw_response"] = raw
 
@@ -368,27 +329,23 @@ class ExtractionPipeline:
         swipe_index: int,
         assistant_response: str,
         conversation_context: str = "",
-        mode: str = "character",
         character_name: str = "",
-        persona_name: str = "",
-        tracked_characters: List[str] = None,
-        character_description: str = "",
+        tracked_characters: Optional[List[str]] = None,
+        mode: str = "character",
         is_initial: bool = False,
     ) -> Dict[str, Any]:
         """Execute the full extraction pipeline asynchronously.
 
         Args:
-            session_id: Session UUID
-            message_id: Message counter
-            swipe_index: Current swipe position
-            assistant_response: The RP LLM's narrative output (or card data for initial)
-            conversation_context: Additional context (e.g. latest user message)
-            mode: "character" or "scenario" — selects the extraction prompt
-            character_name: Active character name from extension
-            persona_name: User persona name from extension
-            tracked_characters: List of character names to track (multi-char)
-            character_description: Full character description (for initial extraction)
-            is_initial: True if this is extracting from the card, False for ongoing
+            session_id: The session UUID.
+            message_id: Sequential message counter.
+            swipe_index: Current swipe position.
+            assistant_response: The RP LLM's narrative output to extract from.
+            conversation_context: Optional context (e.g. latest user message).
+            character_name: Name of the primary character (for prompt).
+            tracked_characters: List of character names to track (for group/multi-char).
+            mode: Extraction mode - "character" or "scenario".
+            is_initial: True if this is initial character card extraction.
         """
         initial_state = ExtractionState(
             session_id=session_id,
@@ -396,6 +353,10 @@ class ExtractionPipeline:
             swipe_index=swipe_index,
             assistant_response=assistant_response,
             conversation_context=conversation_context,
+            character_name=character_name or "",
+            tracked_characters=tracked_characters or [],
+            mode=mode or "character",
+            is_initial=is_initial or False,
             world_state={},
             formatted_messages=[],
             raw_response="",
@@ -403,12 +364,6 @@ class ExtractionPipeline:
             success=False,
             error=None,
             changes_applied=0,
-            mode=mode,
-            character_name=character_name,
-            persona_name=persona_name,
-            tracked_characters=tracked_characters or [],
-            character_description=character_description,
-            is_initial=is_initial,
         )
 
         try:

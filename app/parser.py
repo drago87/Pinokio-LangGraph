@@ -28,6 +28,12 @@ class SystemMeta(BaseModel):
     )
     swipe_index: int = Field(0, ge=0, description="Current swipe position")
 
+    # Optional group fields (populated by extension for group chats)
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
+    members: List[str] = Field(default_factory=list, description="Group member names")
+    disabled_members: List[str] = Field(default_factory=list, description="Muted member names")
+
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
@@ -46,6 +52,7 @@ META_PATTERN = re.compile(
     r"message_id=(?P<message_id>\d+)\s+"
     r"type=(?P<type>\w+)\s+"
     r"swipe_index=(?P<swipe_index>\d+)"
+    r"(?:\s+(?P<rest>.*))?"
 )
 
 
@@ -68,10 +75,39 @@ def parse_system_meta(content: str) -> Optional[SystemMeta]:
             type=match.group("type"),
             swipe_index=int(match.group("swipe_index")),
         )
+
+        # Parse optional group fields from the rest of the tag
+        rest = match.group("rest") or ""
+        if rest:
+            # group_id (single token, no spaces)
+            gid = re.search(r"\bgroup_id=(\S+)", rest)
+            if gid:
+                meta.group_id = gid.group(1)
+
+            # group_name (may contain spaces, up to next known key or end)
+            gn = re.search(
+                r"\bgroup_name=(.+?)(?=\s+members=|\s+disabled_members=|$)",
+                rest,
+            )
+            if gn:
+                meta.group_name = gn.group(1).strip()
+
+            # members (comma-separated list, no spaces)
+            mb = re.search(r"\bmembers=(\S+)", rest)
+            if mb:
+                meta.members = [m.strip() for m in mb.group(1).split(",") if m.strip()]
+
+            # disabled_members (comma-separated list, no spaces)
+            dm = re.search(r"\bdisabled_members=(\S+)", rest)
+            if dm:
+                meta.disabled_members = [m.strip() for m in dm.group(1).split(",") if m.strip()]
+
         logger.debug(
-            f"Parsed meta: session={meta.session_id}, "
+            f"Parsed meta: session={meta.session_id[:8]}..., "
             f"msg={meta.message_id}, type={meta.type}, "
             f"swipe={meta.swipe_index}"
+            + (f", group={meta.group_name}" if meta.group_name else "")
+            + (f", members={meta.members}" if meta.members else "")
         )
         return meta
     except Exception as e:
