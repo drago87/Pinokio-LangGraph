@@ -122,6 +122,14 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
           <span class="badge-dot" id="extDot"></span>
           <span id="extLabel">ST Extension: off</span>
         </span>
+        <span class="badge badge-red" id="rpBadge">
+          <span class="badge-dot"></span>
+          <span id="rpLabel">RP LLM: off</span>
+        </span>
+        <span class="badge badge-red" id="instructBadge">
+          <span class="badge-dot"></span>
+          <span id="instructLabel">Instruct: off</span>
+        </span>
         <span class="badge badge-orange" id="debugBadge" style="display:none;">
           <span class="badge-dot"></span>
           DEBUG
@@ -230,6 +238,28 @@ async function updateStatusBadges() {
     extLabel.textContent = 'ST Extension: off';
   }
 
+  // RP LLM status
+  const rpBadge = document.getElementById('rpBadge');
+  const rpLabel = document.getElementById('rpLabel');
+  if (status.rp_llm_connected) {
+    rpBadge.className = 'badge badge-green';
+    rpLabel.textContent = 'RP LLM: on';
+  } else {
+    rpBadge.className = 'badge badge-red';
+    rpLabel.textContent = status.rp_llm_disabled ? 'RP LLM: disabled' : 'RP LLM: off';
+  }
+
+  // Instruct LLM status
+  const instructBadge = document.getElementById('instructBadge');
+  const instructLabel = document.getElementById('instructLabel');
+  if (status.instruct_llm_connected) {
+    instructBadge.className = 'badge badge-green';
+    instructLabel.textContent = 'Instruct: on';
+  } else {
+    instructBadge.className = 'badge badge-red';
+    instructLabel.textContent = status.instruct_llm_disabled ? 'Instruct: disabled' : 'Instruct: off';
+  }
+
   if (status.debug_mode) {
     debugBadge.style.display = '';
   } else {
@@ -300,6 +330,7 @@ async function selectSession(sid, el) {
 
   const charName = data.character_name || 'Unknown';
   title.textContent = charName + ' (' + sid.substring(0,8) + '...)';
+  resetDeleteBtn();
   btnDel.style.display = '';
 
   const ws = data.world_state || {};
@@ -320,6 +351,12 @@ function closeDeleteModal() {
   document.getElementById('deleteModal').classList.remove('visible');
 }
 
+function resetDeleteBtn() {
+  const btnDel = document.getElementById('btnDeleteSession');
+  btnDel.disabled = false;
+  btnDel.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 1.75a.25.25 0 0 1 .25-.25h2.5a.25.25 0 0 1 .25.25V3h-3V1.75zM5 3V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75V3h3.5a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5H5V3zm-3 1.5v11h13v-11H2zM4.5 5a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-7z"/></svg> Delete';
+}
+
 async function doDeleteSession() {
   if (!activeSession) return;
   closeDeleteModal();
@@ -335,12 +372,13 @@ async function doDeleteSession() {
     document.getElementById('detailBody').innerHTML = '<div class="empty-state" style="padding:20px;">Session deleted. Select another.</div>';
     document.getElementById('detailTitle').textContent = 'World State';
     btnDel.style.display = 'none';
+    resetDeleteBtn();
     // Refresh session list immediately
     const sessions = await apiFetch('/api/dashboard/sessions');
     if (sessions) renderSessions(sessions);
   } else {
     document.getElementById('detailBody').innerHTML = '<div class="empty-state" style="padding:20px;">Delete failed. Check Agent terminal.</div>';
-    btnDel.disabled = false;
+    resetDeleteBtn();
   }
 }
 

@@ -308,14 +308,61 @@ async def dashboard_status():
     * extension_connected — True if the ST extension pinged recently
       (within the last 45 seconds).
     * debug_mode — current debug flag from config.
+    * rp_llm_connected — True if the RP LLM backend responds to /v1/models.
+    * instruct_llm_connected — True if the Instruct LLM backend responds to /v1/models.
     """
     connected = (time.time() - _last_extension_ping) < 45
     if not config_manager:
-        return {"extension_connected": False, "debug_mode": False}
+        return {
+            "extension_connected": False,
+            "debug_mode": False,
+            "rp_llm_connected": False,
+            "rp_llm_disabled": False,
+            "instruct_llm_connected": False,
+            "instruct_llm_disabled": False,
+        }
+
+    cfg = config_manager.config
+    urls = config_manager.get_effective_urls()
+
+    # Probe RP LLM
+    rp_connected = False
+    if not cfg.rp_llm_disabled:
+        rp_connected = await _probe_llm(urls["rp_llm_url"])
+
+    # Probe Instruct LLM
+    instruct_connected = False
+    if not cfg.instruct_llm_disabled:
+        instruct_connected = await _probe_llm(urls["instruct_llm_url"])
+
     return {
         "extension_connected": connected,
-        "debug_mode": config_manager.config.debug_mode,
+        "debug_mode": cfg.debug_mode,
+        "rp_llm_connected": rp_connected,
+        "rp_llm_disabled": cfg.rp_llm_disabled,
+        "instruct_llm_connected": instruct_connected,
+        "instruct_llm_disabled": cfg.instruct_llm_disabled,
     }
+
+
+async def _probe_llm(base_url: str, timeout_s: float = 3.0) -> bool:
+    """Check if an LLM backend is reachable by hitting /v1/models.
+
+    Returns True if we get any HTTP response within the timeout.
+    The URL may or may not include a path already — we only append
+    /v1/models if the base doesn't end with a slash-path.
+    """
+    import httpx
+    url = base_url.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    url += "/models"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
+            resp = await client.get(url)
+            return resp.status_code == 200
+    except Exception:
+        return False
 
 
 # ── Delete Session Endpoint ──────────────────────────────────
